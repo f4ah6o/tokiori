@@ -24,6 +24,6 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 
 P0 宣言的モデル / 汎用 CRUD・最小 CLI → P1 Bitemporal Engine → P2 Operation / Event Engine → P3 Query Compiler → P4 安定 CLI / SDK / API / UI。
 
-実装は **TDD** を基本とし、P0 から [sile/noprop](https://github.com/sile/noprop) による **PBT** と **cargo-fuzz** による **fuzzing** を継続します。各段階の受入条件・失敗再現・CI 方針、および実装で追跡する 7 件の受入シナリオ（`ORG-001`〜`ORG-007`）はロードマップに記載しています。
+実装は **TDD** を基本とし、P0 から [sile/noprop](https://github.com/sile/noprop) による **PBT** と **cargo-fuzz** による **fuzzing** を継続します。さらに [Proof-Driven Development 方針](docs/PDD.md) に沿って、人が承認する仕様、Verus 形式検証の候補、信頼境界、PR の検証証拠を段階的に整備します（PDD/Verus は未実装）。各段階の受入条件・失敗再現・CI 方針、および実装で追跡する 7 件の受入シナリオ（`ORG-001`〜`ORG-007`）はロードマップに記載しています。
 
 > **Status:** 設計・計画段階です。実装、CLI、API、SDK、テスト、CI はまだ提供していません。
