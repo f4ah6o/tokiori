@@ -1,0 +1,21 @@
+[package]
+name = "tokiori-model"
+description = "Declarative model AST, validation, and temporal primitives for Tokiori"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+noprop.workspace = true
+
+[lints]
+workspace = true
