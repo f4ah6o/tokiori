@@ -11,6 +11,8 @@
 
 業務概念が増えるたびに、エンティティ、所属などの関係、変更履歴、異動などの操作、監査ログのテーブルを手動で増やし続けたくない。開発者は **何が存在し、どのような関係があり、どう変化し得るか** を宣言する。Tokiori が PostgreSQL 上の物理表、時点管理、クエリ、変更記録を吸収する。
 
+**目指す操作面（完成形の概念例・構文未確定）:** モデルを一度宣言し、社員と部署を登録する。異動は `Transfer(employee=E001, to=Planning, effective_on=2027-07-01, request_id=req-1)` と伝える。通常の取得では現在の所属を返し、調査時だけ `membership(E001, valid_at=2027-07-10, known_revision=r10)` のように照会する。利用者は履歴表・履歴行・イベント行を手動管理しない。**P0 は登録、P1 は時点照会、P2 は Transfer、P3 は横断検索、P4 は外部 API** を担当するため、これは現行 API の使用例ではない。
+
 - **XTDB に学ぶ**: 有効時刻 (valid time) と記録時刻 (system/recorded time) を分け、ある時点の事実と「当時どう認識していたか」を問い合わせる。
 - **TypeDB に学ぶ**: Entity、Relation、Role を第一級の概念として扱う。二者関係だけでなく、多項関係と関係の属性を表現する。
 - **PostgreSQL を使う**: 一般的な PostgreSQL 18 を前提とし、専用サーバー、特殊な PostgreSQL 拡張のインストール、外部の XTDB/TypeDB インスタンスを必須にしない。必要なら PostgreSQL 付属の btree_gist 拡張を有効化する。
@@ -88,18 +90,27 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 
 **後付けしない境界:** P0 の永続化キーと操作 API に `scope_id` (将来のテナント境界) と `model_version` を含める。P0 は単一スコープ運用でよいが、異なるスコープの ID や参照を混在させない。P4 の認証・認可導入時に既存の事実へスコープを推測して付与する移行を避ける。
 
+**P0 → P1 の移行契約:** P0 は現在状態の CRUD とし、P1 導入前の変更について二時点監査を保証しない。P1 導入時は P0 の確定状態を初期履歴として取り込み、それ以前の `known_revision` を捏造しない。既存 ID・`scope_id`・`model_version` を保ち、再実行・中断・rollback を実 DB で検証する。
+
 ### 時間・整合性の基本契約
 
 - 有効期間は半開区間 **[from, to)**、時刻は UTC で保存し、表示タイムゾーンと区別する。無期限の終端を扱い、空期間は拒否する。
 - 日付のみの業務入力 (例: 7 月 1 日付の異動) は、モデルが宣言する IANA 業務タイムゾーンに従って時刻境界へ変換する。暗黙のサーバーローカル時刻変換はしない。日付型を直接保持するかは P1 ADR で決める。
 - 有効時刻は業務上の効力発生日、記録時刻はシステムがそれを記録・認識した時点。両者を混ぜない。
 - 履歴上の訂正は過去バージョンを不可視化するのではなく、**新しい知識として新バージョンを記録**する。記録済み内容の通常 UPDATE/DELETE は許さず、システム期間を閉じるメタデータ更新だけを厳格に許容する設計を比較する。
-- 「ある時点に知っていた内容」は、**確定した変更の順序**を一意に示す **recorded revision** により決定論的に再現する。事実・関係の役割・操作効果・outbox は同一 revision の整合したスナップショットとして読む。単なる採番順やトランザクション開始時刻をコミット順とみなさない。
+- 「ある時点に知っていた内容」は、**確定した変更の順序**を一意に示す **recorded revision** により決定論的に再現する。revision は **`scope_id` ごとに単調増加**し、スコープをまたいで比較しない。事実・関係の役割・操作効果・outbox は同一 revision の整合したスナップショットとして読む。単なる採番順やトランザクション開始時刻をコミット順とみなさず、revision の連番に欠番がないことも公開契約にしない。
 - P1 の正準クエリ引数は `known_revision`。`known_at` (壁時計) は確定 revision への写像と同時刻のタイブレーク規則を ADR とテストで決めてから公開する。記録時刻を DB コミット時刻と無条件に同一視しない。
-- P1 はまず書き込みの記録順序を直列化する等の単純で正しい方式を採り、測定後に細粒度化する。**ロック獲得 → revision 付与 → 履歴反映 → commit** の順序と失敗時の挙動を ADR で固定し、競合・ロールバック・再起動・読取中の同時書込を実 DB で検証する。
+- P1 はまず書き込みの記録順序を直列化する等の単純で正しい方式を採り、測定後に細粒度化する。**スコープ別 revision head 行のロック → 最新状態と事前条件の再検証 → revision 付与 → 履歴反映 → commit** を初期案として ADR で固定する。待機前の古いスナップショットを再利用しないよう分離レベル・競合再試行方針を定め、rollback・再起動・読取中の同時書込を実 DB で検証する。
 - 「所属は同期間に 1 つまで」等の制約はモデルごとに明示する。兼務等はモデルを変更して許容できる。**異なる revision に属する同じ有効期間の版は重なってよい**が、同一確定スナップショット内の制約違反は不可。
 - 参加者の失効・削除と関係の有効期間の整合性は P1 で検証する。孤児関係を暗黙に残したり、自動 cascade で履歴を消したりしない。
 - PostgreSQL 18 の WITHOUT OVERLAPS / PERIOD は**有効時間**の整合性に利用可能だが、二時点履歴の記録時刻管理まで自動提供するわけではない。全バージョンへ無条件に WITHOUT OVERLAPS を適用しない。
+
+### 読取 API の最小契約（P1 から段階導入）
+
+- `get(id)` は **最新の確定 revision とリクエスト基準時刻の valid time** の状態を返す。レスポンスに解決済み `valid_at`、`known_revision`、`model_version` を含め、同じ照会を再生可能にする。テストでは時計を固定する。
+- `get(id, valid_at=V, known_revision=R)` は **R の確定時点に認識されていた V の状態**を返す。未確定・未知・別スコープの revision は明示的に拒否し、結果が存在しない場合と区別する。
+- 複数関係を一画面で読む場合も、同じ `scope_id` と `known_revision` の整合した DB スナップショットを維持する。
+- `known_at` は壁時計から revision への写像が実証できた場合のみ公開する **追加機能**。P1 の必須ゲートは `known_revision` とし、日付境界・DST・曖昧/存在しないローカル時刻を固定 fixture で検証する。
 
 ## 2. 開発規律: TDD / PBT / fuzzing を初日から
 
@@ -141,6 +152,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 ### fuzzing: cargo-fuzz / libFuzzer (採用)
 
 - fuzz ターゲットは Rust の純粋関数または隔離したテスト環境から始める。
+- 製品の通常 CI は **Rust stable**、`cargo-fuzz` は **別ジョブでバージョンを固定した nightly** で実行する。製品 crate に nightly を要求しない。
 - **P0:** モデル JSON/YAML 入力、正規化 AST、範囲値、スキーマ検証
 - **P1:** バージョン履歴の状態遷移列、遡及訂正、再構成と参照モデルの差分
 - **P2:** Operation コマンド列、重複キー、失敗・取り消し・再試行
@@ -167,6 +179,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - [ ] YAML/JSON パーサー、正規化、型チェック、互換性エラー
 - [ ] PostgreSQL 初期マイグレーション、安定 ID、`scope_id`・`model_version` を含む汎用エンティティ/関係永続化
 - [ ] モデル適用の繰返し・中断・不整合の扱い (同一モデルは冪等、非互換は明示拒否)
+- [ ] P1 初期履歴への移行を妨げない ID・モデルバージョン・保存契約を ADR で固定
 - [ ] model validate / apply、entity create/get、relation create/get の CLI (最低限)
 - [ ] 組織サンプルと手順を fixture として追加
 
@@ -190,7 +203,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - [ ] valid_time 半開区間の標準化、open-ended 値、境界の扱い
 - [ ] recorded revision / commit order の定義、`known_at` の確定 revision への写像と監査
 - [ ] 属性・関係・ロールの version close + insert を同一トランザクションで処理
-- [ ] 現在、valid_as_of、known_at / known_revision の読み取り API
+- [ ] 現在の取得、`valid_at`、`known_revision` の読み取り API (`known_at` は写像検証後)
 - [ ] 遡及訂正、将来発令、削除の tombstone/終了を明示的に表す
 - [ ] 属する期間の重複防止、空白期間、競合・再試行ポリシー
 - [ ] PostgreSQL 障害・ロールバック・並列更新の統合テスト
@@ -201,6 +214,9 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - 未来の異動が過去の照会に混入しない
 - 同一社員の競合書き込みで確定履歴の重複・矛盾が生じない
 - 全表を同じ `known_revision` で照会すると、部分的に新しい関係や操作効果が見えない
+- r10/r11 の訂正 fixture で 7 月 10 日・16 日の表を完全一致で再現できる
+- P0 からの初期履歴 migration を中断・再開しても ID・現在状態が保たれ、存在しない過去の知識を返さない
+- ロック待機後の stale read と rollback 後の再試行でも revision 順序が破綻しない
 - 参加者失効時の不正な孤児関係が拒否され、過去スナップショットの関係は保持される
 
 **PBT / fuzz**: 任意の時点分割・補正・問い合わせ列を参照モデルと照合。境界、訂正、順序、重複を偏重生成する。
@@ -218,7 +234,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - [ ] operation と状態変更と outbox 追加の単一コミット
 - [ ] 取消を「過去の消去」ではなく補償操作として表現する
 - [ ] リトライ、重複到着、競合、途中失敗の規約
-- [ ] outbox の再送・順不同・重複を前提にした購読者契約
+- [ ] outbox の再送・順不同・重複を前提にした購読者契約 (event_id、scope/revision、ack 前 crash の再送、購読側 deduplication)
 
 **Red → Green の代表テスト (What)**
 - 同一 Transfer request が 2 回届いても異動は 1 回で、同じ結果を返す
@@ -236,8 +252,8 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 **目的:** SQL のテーブル結合を直接意識せず、関係探索と時点検索を記述できる。
 
 **実装**
-- [ ] 型付き Query AST (entity、relation、role、predicate、valid_at、known_at)
-- [ ] AST からパラメータ化 SQL へのコンパイラ、入力リテラルの安全な束縛
+- [ ] 型付き Query AST (entity、relation、role、predicate、valid_at、known_revision。`known_at` は有効化された場合のみ)
+- [ ] AST からパラメータ化 SQL へのコンパイラ、入力リテラルの安全な束縛。SQL 識別子は検証済みモデルからだけ生成し、利用者入力を識別子へ連結しない
 - [ ] 二者 / 多項関係の traversal、深さ・件数・処理量の上限と循環の停止規則
 - [ ] 時点指定付き組織図、関係履歴、イベント provenance の参照 API
 - [ ] EXPLAIN に基づく指数・インデックス設計、性能計測と回帰基準
@@ -245,7 +261,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 
 **Red → Green の代表テスト (What)**
 - ある時点の組織図と手計算した参照結果が一致する
-- valid_at と known_at を同時に変えたとき参照モデルに一致する
+- `valid_at` と `known_revision` を同時に変えたとき参照モデルに一致する
 - 不正な role/path/属性名がコンパイル段階で拒否される
 - 利用者入力が SQL 構造へ注入されない
 - 複数テーブルの traversal が単一の `known_revision` と `scope_id` を保ち、循環・巨大探索は上限で停止する
@@ -289,12 +305,13 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 | PR / 毎 commit | cargo clippy --workspace --all-targets -- -D warnings | lint |
 | PR / 毎 commit | cargo test --workspace --all-targets | TDD / unit / integration / PBT |
 | PR | PostgreSQL 18 を起動した migration + 時間・同時実行 E2E | SQL の実動作 |
-| PR | 保存済み corpus を使う cargo-fuzz smoke (対象・時間は確定後) | crash / invariant |
+| PR (nightly / Linux) | 保存済み corpus を使う `cargo +nightly fuzz run` smoke (対象・時間は確定後) | crash / invariant |
 | Nightly | noprop 大量ケース + すべての fuzz ターゲット | 長時間探索 |
 | Nightly | 書き込み競合 / 障害注入 / migration compatibility | 一貫性 |
 | Release | 2 業務サンプルの clean install + backup/restore | 配布受入 |
 
-- すべての PBT/fuzz 失敗は **再現用情報を artifact に保存**する。テストが完了していない場合は timeout / cancelled / not-run を PASS としない。
+- すべての PBT/fuzz 失敗は **再現用情報を artifact に保存**する。テストが完了していない場合は timeout / cancelled / not-run を PASS としない。fuzz では toolchain、target、corpus hash、実行時間、終了理由を記録する。
+- P0 で fuzz ジョブを構築するまでは smoke は未実行。導入後の起動不能もゲート未通過として、実装失敗と環境不備を区別する。
 - **実行対象の段階化:** P0 は unit・モデル PBT・パーサー fuzz・PostgreSQL fixture、P1 は記録順序/訂正の競合 E2E、P2 は fault injection、P3 は query differential、P4 は認可・配布・復元を追加する。先行ゲートを後続で省略しない。
 - 仕様変更に伴う fixture の更新は期待値の根拠をレビューする。スナップショットを盲目的に更新しない。
 - テストの重みは unit → property → DB integration → E2E → fault injection の順に増やすが、各段階のゲートは省略しない。
@@ -315,8 +332,8 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 
 各ゲートで ADR (Architecture Decision Record) を残す。
 
-1. **P0 開始時:** 正規化 AST とストレージ分離。モデルのバージョン互換規約。スコープ ID の配置と参照境界。
-2. **P1 開始時:** recorded revision の確定順序・ロック・`known_at` 写像。業務日付のタイムゾーン、時間境界と訂正手法。PostgreSQL temporal constraint の適用範囲。
+1. **P0 開始時:** 正規化 AST とストレージ分離。モデルのバージョン互換規約。スコープ ID の配置と参照境界。P1 初期履歴への移行契約。
+2. **P1 開始時:** スコープ別 recorded revision の確定順序・ロック・分離レベル・再試行。`known_at` 写像の公開可否。業務日付のタイムゾーン、時間境界と訂正手法。PostgreSQL temporal constraint の適用範囲。
 3. **P2 開始時:** Operation を監査可能な意図として扱うか、event sourcing へ拡張するか。初期方針は前者。
 4. **P3 開始時:** モデルクエリの表現力と安全性/性能のバランス。無制限 traversal を認めない。
 5. **P4 開始時:** サーバー・SDK・UI の公開安定性と認証/テナント分離の責任範囲。
@@ -370,7 +387,7 @@ sdks/                    # P4: TypeScript / Python
 ## 8. 参考資料
 
 - PostgreSQL 18 temporal constraints: https://www.postgresql.org/docs/18/sql-createtable.html
-- PostgreSQL temporal tables (system time の未対応範囲): https://www.postgresql.org/docs/19/ddl-temporal-tables.html
+- PostgreSQL temporal tables (system time の未対応範囲): https://www.postgresql.org/docs/18/ddl-temporal-tables.html
 - sile/noprop: https://github.com/sile/noprop
 - noprop API / seed / 再現 / 制約: https://docs.rs/noprop/latest/noprop/
 - Rust fuzzing: https://rust-fuzz.github.io/book/cargo-fuzz.html
