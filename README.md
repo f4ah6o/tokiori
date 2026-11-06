@@ -12,7 +12,7 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 ## 想定する利用の流れ（未実装）
 
 1. 社員・部署・所属のモデルを宣言して、実体と関係を登録する（P0）。
-2. 有効日と記録 revision を指定して当時の状態を調べる（P1）。P0 以前の履歴は再現できない。
+2. 有効日と記録 revision を指定して当時の状態を調べる（P1）。P0 で記録していない変更履歴は復元せず、P1 への移行前の時点は「履歴不明」として区別する。
 3. 異動を単一の業務操作として記録・再試行する（P2）。組織図などの横断照会を行う（P3）。
 4. SDK / API / 読取専用 UI から複数業務モデルを利用する（P4）。
 
@@ -22,8 +22,8 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 
 **[P0–P4 実装ロードマップ (docs/ROADMAP.md)](docs/ROADMAP.md)**
 
-P0 宣言的モデル / 汎用 CRUD → P1 Bitemporal Engine → P2 Operation / Event Engine → P3 Query Compiler → P4 CLI / SDK / API / UI。
+P0 宣言的モデル / 汎用 CRUD・最小 CLI → P1 Bitemporal Engine → P2 Operation / Event Engine → P3 Query Compiler → P4 安定 CLI / SDK / API / UI。
 
-実装は **TDD** を基本とし、P0 から [sile/noprop](https://github.com/sile/noprop) による **PBT** と **cargo-fuzz** による **fuzzing** を継続します。各段階の受入条件・失敗再現・CI 方針はロードマップに記載しています。
+実装は **TDD** を基本とし、P0 から [sile/noprop](https://github.com/sile/noprop) による **PBT** と **cargo-fuzz** による **fuzzing** を継続します。各段階の受入条件・失敗再現・CI 方針、および実装で追跡する 7 件の受入シナリオ（`ORG-001`〜`ORG-007`）はロードマップに記載しています。
 
 > **Status:** 設計・計画段階です。実装、CLI、API、SDK、テスト、CI はまだ提供していません。
