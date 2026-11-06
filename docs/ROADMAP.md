@@ -108,7 +108,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 ### 読取 API の最小契約（P1 から段階導入）
 
 - `get(id)` は **最新の確定 revision とリクエスト基準時刻の valid time** の状態を返す。レスポンスに解決済み `valid_at`、`known_revision`、`model_version` を含め、同じ照会を再生可能にする。テストでは時計を固定する。
-- `get(id, valid_at=V, known_revision=R)` は **R の確定時点に認識されていた V の状態**を返す。未確定・未知・別スコープの revision は明示的に拒否し、結果が存在しない場合と区別する。
+- `get(id, valid_at=V, known_revision=R)` は **R の確定時点に認識されていた V の状態**を返す。未確定・現在の `scope_id` に存在しない revision は明示的に拒否し、結果が存在しない場合と区別する。
 - 複数関係を一画面で読む場合も、同じ `scope_id` と `known_revision` の整合した DB スナップショットを維持する。
 - `known_at` は壁時計から revision への写像が実証できた場合のみ公開する **追加機能**。P1 の必須ゲートは `known_revision` とし、日付境界・DST・曖昧/存在しないローカル時刻を固定 fixture で検証する。
 
@@ -152,7 +152,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 ### fuzzing: cargo-fuzz / libFuzzer (採用)
 
 - fuzz ターゲットは Rust の純粋関数または隔離したテスト環境から始める。
-- 製品の通常 CI は **Rust stable**、`cargo-fuzz` は **別ジョブでバージョンを固定した nightly** で実行する。製品 crate に nightly を要求しない。
+- 製品の通常 CI は **Rust stable**、`cargo-fuzz` は **別ジョブで日付指定の nightly を固定** で実行する。製品 crate に nightly を要求しない。
 - **P0:** モデル JSON/YAML 入力、正規化 AST、範囲値、スキーマ検証
 - **P1:** バージョン履歴の状態遷移列、遡及訂正、再構成と参照モデルの差分
 - **P2:** Operation コマンド列、重複キー、失敗・取り消し・再試行
@@ -201,7 +201,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 
 **実装**
 - [ ] valid_time 半開区間の標準化、open-ended 値、境界の扱い
-- [ ] recorded revision / commit order の定義、`known_at` の確定 revision への写像と監査
+- [ ] スコープ別 recorded revision / commit order の定義。`known_at` の確定 revision への写像は ADR で実現可能性を検証し、公開は必須としない
 - [ ] 属性・関係・ロールの version close + insert を同一トランザクションで処理
 - [ ] 現在の取得、`valid_at`、`known_revision` の読み取り API (`known_at` は写像検証後)
 - [ ] 遡及訂正、将来発令、削除の tombstone/終了を明示的に表す
@@ -305,7 +305,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 | PR / 毎 commit | cargo clippy --workspace --all-targets -- -D warnings | lint |
 | PR / 毎 commit | cargo test --workspace --all-targets | TDD / unit / integration / PBT |
 | PR | PostgreSQL 18 を起動した migration + 時間・同時実行 E2E | SQL の実動作 |
-| PR (nightly / Linux) | 保存済み corpus を使う `cargo +nightly fuzz run` smoke (対象・時間は確定後) | crash / invariant |
+| PR (nightly / Linux) | 保存済み corpus を使う `cargo +nightly-YYYY-MM-DD fuzz run` smoke (対象・時間は確定後) | crash / invariant |
 | Nightly | noprop 大量ケース + すべての fuzz ターゲット | 長時間探索 |
 | Nightly | 書き込み競合 / 障害注入 / migration compatibility | 一貫性 |
 | Release | 2 業務サンプルの clean install + backup/restore | 配布受入 |
