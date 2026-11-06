@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-clippy-test:
+    name: fmt / clippy / unit + property tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit and property tests
+        env:
+          TOKIORI_PROPTEST_SEED: '20261107'
+        run: cargo test --workspace --all-targets
+
+  postgres-e2e:
+    name: PostgreSQL 18 acceptance (ORG-001, ORG-002)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: tokiori
+          POSTGRES_PASSWORD: tokiori
+          POSTGRES_DB: tokiori
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U tokiori"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Acceptance tests
+        env:
+          TOKIORI_TEST_DATABASE_URL: postgres://tokiori:tokiori@localhost:55432/tokiori
+          TOKIORI_PROPTEST_SEED: '20261107'
+        run: |
+          cargo test -p tokiori-pg -p tokiori-cli -- --nocapture 2>&1 | tee e2e.log
+          if grep -q 'SKIPPED:' e2e.log; then
+            echo '::error::an acceptance test skipped; TOKIORI_TEST_DATABASE_URL must be set'
+            exit 1
+          fi
+
+  fuzz-smoke:
+    name: fuzz smoke (parser)
+    runs-on: ubuntu-24.04
+    # Advisory while the corpus is young; promote to required once stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Fuzz the model parser
+        working-directory: fuzz
+        run: cargo fuzz run fuzz_model_input -- -runs=20000 -max_total_time=120
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
