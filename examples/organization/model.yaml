@@ -1,0 +1,23 @@
+# The same model as model.json, in the human-friendly form.
+model: organization
+version: 1
+time_zone: Asia/Tokyo
+entities:
+  - name: employee
+    attributes:
+      name: text
+      joined_on: date
+  - name: department
+    attributes:
+      name: text
+relations:
+  - name: membership
+    attributes:
+      title: text
+    roles:
+      employee:
+        entity: employee
+        cardinality: one
+      department:
+        entity: department
+        cardinality: many
