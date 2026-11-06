@@ -3,6 +3,7 @@
 - 状態: **計画 (未実装)**。本書のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
 - 対象: PostgreSQL を永続化先とする汎用 Temporal + Relationship データモデリングエンジン
 - 方針: TDD を実装の基本サイクルにし、sile/noprop による PBT と cargo-fuzz による fuzzing を P0 から継続する。
+- PDD: [Proof-Driven Development 導入方針](PDD.md) に沿い、承認済み intent・形式仕様・信頼境界・検証証拠の対応を明示する。**研究プロトタイプの Verus 証明は段階的な導入候補であり、未実装。**
 - 進行: **P0 → P1 → P2 → P3 → P4**。期間ではなく、再現可能な受入基準で次段階へ進む。
 
 ## 0. 北極星・スコープ
@@ -135,6 +136,16 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - `known_at` は壁時計から revision への写像が実証できた場合のみ公開する **追加機能**。P1 の必須ゲートは `known_revision` とし、日付境界・DST・曖昧/存在しないローカル時刻を固定 fixture で検証する。
 
 ## 2. 開発規律: TDD / PBT / fuzzing を初日から
+
+### PDD（Proof-Driven Development）の位置づけ
+
+[GitHub Next PDD Kit](https://githubnext.com/projects/pdd-kit/) の **人が intent を承認 → 形式化できる純粋ロジックを Verus で証明 → 外部依存は明示的な trusted boundary と実行テストで補完 → PR に receipt を残す** 方法を [docs/PDD.md](PDD.md) に計画として取り込む。PDD Kit の研究プロトタイプそのものを必須依存にしない。形式証明は仕様に書いた性質だけを対象とし、PostgreSQL の ACID・commit 順序・I/O の正しさや仕様に書かれなかった要件を自動保証しない。
+
+- **P0:** role/scope 検証の純粋な関数 1 件で proof-of-concept を行い、実現性とコストを ADR に残す。既存の P0 CRUD・PBT/fuzz/実 DB 受入を proof PoC の成功で代替しない。
+- **P1:** `ORG-004` の旧 revision 非干渉性・半開区間境界・過去の認識の保存を最優先の証明候補とする。DB の snapshot、ロック後再評価、rollback、再起動は trusted boundary として E2E を要求する。
+- **P2–P4:** 冪等な状態遷移、Query AST の妥当性、認可の決定ロジックから段階的に候補を増やす。
+- **運用:** 検証不能な条項を無断で弱めず、formal / empirical / unverified を区別する。証明済み関数を**本番経路が実際に利用する**こと、証明条項が mutation で空疎でないことを確認する。
+
 
 ### TDD の必須サイクル
 
@@ -329,6 +340,8 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 | PR | PostgreSQL 18 を起動した migration + 時間・同時実行 E2E | SQL の実動作 |
 | PR (nightly / Linux) | 保存済み corpus を使う `cargo +nightly-YYYY-MM-DD fuzz run` smoke (対象・時間は確定後) | crash / invariant |
 | Nightly | noprop 大量ケース + すべての fuzz ターゲット | 長時間探索 |
+| P0 PoC（非必須、導入後） | Verus 固定版で純粋な role/scope 検証の proof を試験 | 可否・制約・コストを ADR に記録。未導入なら未実行 |
+| verified core 導入後の PR | 固定 revision の Verus check + spec mutation + 受入済み intent との receipt 照合 | 対象証明の PASS/FAIL/未実行を明示。本番経路へ接続後に required check 化 |
 | Nightly | 書き込み競合 / 障害注入 / migration compatibility | 一貫性 |
 | Release | 2 業務サンプルの clean install + backup/restore | 配布受入 |
 
@@ -348,6 +361,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - **PBT**: seed、件数、結果 (PASS/FAIL/未実行)
 - **fuzz**: ターゲット、時間、corpus、結果 (PASS/FAIL/未実行)
 - **DB E2E**: PostgreSQL バージョン、並行数、障害条件、結果
+- **PDD（対象のみ）**: intent/ADR、formal clauses と verifier 実行結果、trusted boundary と対応テスト、spec mutation、production wiring、未検証項目
 - **未解決**: ブロッカーと対処、次の優先順位
 
 ## 5. 重要な意思決定ゲート
@@ -423,5 +437,8 @@ sdks/                    # P4: TypeScript / Python
 - sile/noprop: https://github.com/sile/noprop
 - noprop API / seed / 再現 / 制約: https://docs.rs/noprop/latest/noprop/
 - Rust fuzzing: https://rust-fuzz.github.io/book/cargo-fuzz.html
+- GitHub Next PDD Kit (Proof-Driven Development): https://githubnext.com/projects/pdd-kit/
+- Verus: https://github.com/verus-lang/verus
+- Tokiori PDD 方針: [docs/PDD.md](PDD.md)
 - XTDB: https://xtdb.com/
 - TypeDB: https://typedb.com/
