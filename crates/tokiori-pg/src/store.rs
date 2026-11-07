@@ -281,6 +281,13 @@ impl PgStore {
         .execute(&mut *tx)
         .await?;
 
+        // The roles are written twice on purpose: the current-state table is
+        // what the P0 read path returns, and the versioned table is what the
+        // temporal read path and queries traverse. Writing only one of them
+        // makes the relation invisible to the other.
+        let revision = crate::revision::next_revision_in(&mut tx, &input.scope).await?;
+        let recorded = i64::try_from(revision).expect("revision fits");
+
         for (role_name, entity_id) in &participants {
             let role = &relation.roles[role_name];
             sqlx::query(
@@ -292,6 +299,24 @@ impl PgStore {
             .bind(&input.relation_type)
             .bind(&input.id)
             .bind(role_name)
+            .bind(&role.entity)
+            .bind(entity_id)
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                "INSERT INTO relation_role_versions \
+                 (scope_id, relation_type, relation_id, role, valid_from, valid_until, \
+                  recorded_from, participant_entity_type, participant_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(&input.scope)
+            .bind(&input.relation_type)
+            .bind(&input.id)
+            .bind(role_name)
+            .bind(input.valid_time.from)
+            .bind(input.valid_time.until)
+            .bind(recorded)
             .bind(&role.entity)
             .bind(entity_id)
             .execute(&mut *tx)

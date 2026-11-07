@@ -73,7 +73,7 @@ async fn cutover_keeps_the_current_values() {
         .await
         .expect("cutover");
 
-    assert_eq!(outcome.revision, 1, "the import is the first revision");
+    assert!(outcome.created, "the import ran");
 
     let name = fx
         .store
@@ -123,7 +123,7 @@ async fn a_date_before_the_cutover_is_history_unavailable_not_not_found() {
         answer.value, None,
         "the value is not claimed before the cutover"
     );
-    assert_eq!(answer.known_revision, 1);
+    assert!(answer.known_revision > 0);
 
     fx.cleanup().await;
 }
@@ -167,13 +167,15 @@ async fn cutover_is_idempotent() {
 async fn a_value_recorded_after_the_cutover_is_visible_at_a_later_revision() {
     let Some(fx) = fixture().await else { return };
     seed_p0_state(&fx).await;
-    fx.store
+    let cutover_revision = fx
+        .store
         .cutover(Cutover {
             scope: fx.scope.clone(),
             at: day(2027, 7, 1),
         })
         .await
-        .expect("cutover");
+        .expect("cutover")
+        .revision;
 
     let revision = fx
         .store
@@ -187,11 +189,11 @@ async fn a_value_recorded_after_the_cutover_is_visible_at_a_later_revision() {
         })
         .await
         .expect("set");
-    assert_eq!(revision, 2);
+    assert!(revision > cutover_revision);
 
     // At r1 the imported value was open-ended, so it covered 8/10; r2 only
     // changed the value from 8/1 onward.
-    let at_r1 = fx
+    let at_import = fx
         .store
         .read_attribute(ReadAttribute {
             scope: fx.scope.clone(),
@@ -199,11 +201,11 @@ async fn a_value_recorded_after_the_cutover_is_visible_at_a_later_revision() {
             entity_id: "E001".to_owned(),
             attribute: "name".to_owned(),
             valid_at: day(2027, 7, 15),
-            known_revision: Some(1),
+            known_revision: Some(cutover_revision),
         })
         .await
-        .expect("read r1");
-    assert_eq!(at_r1.value, Some(json!("Alice")));
+        .expect("read at the import");
+    assert_eq!(at_import.value, Some(json!("Alice")));
 
     let at_r2 = fx
         .store
@@ -213,7 +215,7 @@ async fn a_value_recorded_after_the_cutover_is_visible_at_a_later_revision() {
             entity_id: "E001".to_owned(),
             attribute: "name".to_owned(),
             valid_at: day(2027, 8, 10),
-            known_revision: Some(2),
+            known_revision: Some(revision),
         })
         .await
         .expect("read r2");

@@ -4,10 +4,12 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Map, Value, json};
-use tokiori_model::{Model, ValidTime, canonical_json, parse_model_str};
+use tokiori_model::{
+    EntityRef, Hop, Limits, Model, Query, Select, ValidTime, canonical_json, parse_model_str,
+};
 use tokiori_pg::{
-    ApplyOutcome, CancelTransfer, Cutover, EntityRow, NewEntity, NewRelation, PgError, PgStore,
-    ReadAttribute, ReadRole, RelationRow, SetAttribute, SetRole, Transfer,
+    ApplyOutcome, CancelTransfer, Cutover, EntityRow, NewEntity, NewRelation, OrgChart, PgError,
+    PgStore, ReadAttribute, ReadRole, RelationRow, SetAttribute, SetRole, Transfer,
 };
 
 #[derive(Debug, Parser)]
@@ -73,6 +75,11 @@ enum Command {
         #[command(subcommand)]
         action: OutboxAction,
     },
+    /// Query relationships as of a date and revision.
+    Query {
+        #[command(subcommand)]
+        action: QueryAction,
+    },
     /// Import P0's current state as the first revision.
     Cutover {
         /// The date after which imported facts are asserted.
@@ -81,6 +88,48 @@ enum Command {
     },
 }
 
+#[derive(Debug, Args)]
+struct QueryArgs {
+    /// The entity type to start from.
+    #[arg(long = "from-type")]
+    start_type: String,
+    /// The entity id to start from.
+    #[arg(long = "from")]
+    id: String,
+    /// The relation to traverse.
+    #[arg(long)]
+    relation: String,
+    /// One hop as `ROLE=NEXT_ROLE`. Repeat for a longer path.
+    #[arg(long = "path")]
+    path: Vec<String>,
+    /// Return this attribute of the reached entity instead of its id.
+    #[arg(long)]
+    attribute: Option<String>,
+    #[arg(long)]
+    valid_at: NaiveDate,
+    #[arg(long)]
+    known_revision: Option<u64>,
+    #[arg(long, default_value_t = 4)]
+    max_depth: usize,
+    #[arg(long, default_value_t = 1000)]
+    max_rows: usize,
+}
+
+#[derive(Debug, Args)]
+struct OrgChartArgs {
+    #[arg(long)]
+    valid_at: NaiveDate,
+    #[arg(long)]
+    known_revision: Option<u64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum QueryAction {
+    /// Run a typed query over relationships.
+    Run(QueryArgs),
+    /// List every employee and the department they were in.
+    OrgChart(OrgChartArgs),
+}
 #[derive(Debug, Args)]
 struct TransferArgs {
     #[arg(long)]
@@ -411,6 +460,10 @@ async fn run_temporal(ctx: Context<'_>, command: Command) -> Result<(), Failure>
         Command::Outbox { action } => match action {
             OutboxAction::Claim { limit } => outbox_claim(ctx, limit).await,
             OutboxAction::Ack { event_ids } => outbox_ack(ctx, &event_ids).await,
+        },
+        Command::Query { action } => match action {
+            QueryAction::Run(args) => query_run(ctx, args).await,
+            QueryAction::OrgChart(args) => query_org_chart(ctx, args).await,
         },
         Command::Cutover { at } => cutover(ctx, at).await,
         // Handled by the caller.
@@ -768,6 +821,92 @@ async fn outbox_ack(ctx: Context<'_>, event_ids: &[String]) -> Result<(), Failur
         format!("{acknowledged} event(s) acknowledged")
     });
     Ok(())
+}
+
+async fn query_run(ctx: Context<'_>, args: QueryArgs) -> Result<(), Failure> {
+    let query = build_query(&args)?;
+    let store = open(ctx.database_url).await?;
+    let result = store.query(ctx.scope, &query).await?;
+    let rows: Vec<Value> = result
+        .rows
+        .iter()
+        .map(|row| json!({ "id": row.id, "value": row.value }))
+        .collect();
+    let count = rows.len();
+    let truncated = result.truncated;
+    emit(
+        ctx.format,
+        &json!({
+            "rows": rows,
+            "truncated": truncated,
+            "known_revision": result.known_revision,
+        }),
+        || {
+            let suffix = if truncated { " (truncated)" } else { "" };
+            format!("{count} row(s){suffix}")
+        },
+    );
+    Ok(())
+}
+
+async fn query_org_chart(ctx: Context<'_>, args: OrgChartArgs) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let chart = store
+        .org_chart(OrgChart {
+            scope: ctx.scope.to_owned(),
+            valid_at: args.valid_at,
+            known_revision: args.known_revision,
+        })
+        .await?;
+    emit(ctx.format, &json!(chart), || {
+        chart
+            .iter()
+            .map(|row| format!("{} -> {}", row.employee, row.department))
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    Ok(())
+}
+
+/// Turns the command line into a query.
+///
+/// Each `--path` step is one hop written `ROLE=NEXT_ROLE`; the model decides
+/// whether the path is meaningful, so a bad step is a query error rather than
+/// a database error.
+fn build_query(args: &QueryArgs) -> Result<Query, Failure> {
+    let mut traversal = Vec::new();
+    for step in &args.path {
+        let Some((from_role, to_role)) = step.split_once('=') else {
+            return Err(Failure::new(
+                "invalid_path",
+                format!("path step {step:?} must be written ROLE=NEXT_ROLE"),
+            ));
+        };
+        traversal.push(Hop {
+            relation_type: args.relation.clone(),
+            from_role: from_role.to_owned(),
+            to_role: to_role.to_owned(),
+        });
+    }
+    Ok(Query {
+        start: EntityRef {
+            entity_type: args.start_type.clone(),
+            id: args.id.clone(),
+        },
+        traversal,
+        select: match &args.attribute {
+            Some(attribute) => Select::Attribute {
+                attribute: attribute.clone(),
+            },
+            None => Select::Ids,
+        },
+        valid_at: args.valid_at,
+        known_revision: args.known_revision,
+        limits: Limits {
+            max_depth: args.max_depth,
+            max_rows: args.max_rows,
+        },
+    })
 }
 
 async fn cutover(ctx: Context<'_>, at: NaiveDate) -> Result<(), Failure> {

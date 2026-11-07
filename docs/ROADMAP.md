@@ -1,6 +1,6 @@
 # Tokiori: P0–P4 実装ロードマップ
 
-- 状態: **P0–P2 実装済み / P3 以降は計画**。P0 は [docs/testing/p0-evidence.md](testing/p0-evidence.md)、P1 は [docs/testing/p1-evidence.md](testing/p1-evidence.md)、P2 は [docs/testing/p2-evidence.md](testing/p2-evidence.md) の実行ログで確認できる。P3 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
+- 状態: **P0–P3 実装済み / P4 は計画**。P0 は [docs/testing/p0-evidence.md](testing/p0-evidence.md)、P1 は [docs/testing/p1-evidence.md](testing/p1-evidence.md)、P2 は [docs/testing/p2-evidence.md](testing/p2-evidence.md)、P3 は [docs/testing/p3-evidence.md](testing/p3-evidence.md) の実行ログで確認できる。P4 のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
 - 対象: PostgreSQL を永続化先とする汎用 Temporal + Relationship データモデリングエンジン
 - 方針: TDD を実装の基本サイクルにし、sile/noprop による PBT と cargo-fuzz による fuzzing を P0 から継続する。
 - PDD: [Proof-Driven Development 導入方針](PDD.md) に沿い、承認済み intent・形式仕様・信頼境界・検証証拠の対応を明示する。**研究プロトタイプの Verus 証明は段階的な導入候補であり、未実装。**
@@ -291,12 +291,14 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 **目的:** SQL のテーブル結合を直接意識せず、関係探索と時点検索を記述できる。
 
 **実装**
-- [ ] 型付き Query AST (entity、relation、role、predicate、valid_at、known_revision。`known_at` は有効化された場合のみ)
-- [ ] AST からパラメータ化 SQL へのコンパイラ、入力リテラルの安全な束縛。SQL 識別子は検証済みモデルからだけ生成し、利用者入力を識別子へ連結しない
-- [ ] 二者 / 多項関係の traversal、深さ・件数・処理量の上限と循環の停止規則
-- [ ] 時点指定付き組織図、関係履歴、イベント provenance の参照 API
-- [ ] EXPLAIN に基づく指数・インデックス設計、性能計測と回帰基準
-- [ ] モデルバージョン変更後も旧記録が読める契約の明文化
+- [x] 型付き Query AST (entity、relation、role、predicate、valid_at、known_revision。`known_at` は有効化された場合のみ)
+- [x] AST からパラメータ化 SQL へのコンパイラ、入力リテラルの安全な束縛。SQL 識別子は検証済みモデルからだけ生成し、利用者入力を識別子へ連結しない
+- [x] 二者 / 多項関係の traversal、深さ・件数・処理量の上限と循環の停止規則
+- [x] 時点指定付き組織図、関係履歴、イベント provenance の参照 API
+- [ ] EXPLAIN に基づく指数・インデックス設計、性能計測と回帰基準（**未計測**）
+- [x] モデルバージョン変更後も旧記録が読める契約の明文化
+
+実行した検証は [docs/testing/p3-evidence.md](testing/p3-evidence.md)、判断は [ADR 0007](adr/0007-p3-query-compiler.md)。
 
 **Red → Green の代表テスト (What)**
 - ある時点の組織図と手計算した参照結果が一致する

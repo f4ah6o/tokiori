@@ -132,20 +132,48 @@ async fn a_future_change_does_not_affect_the_present() {
         Option<chrono::NaiveDate>,
         serde_json::Value,
     )> = sqlx::query_as(
-        "SELECT valid_from, valid_until, value FROM fact_versions ORDER BY valid_from",
+        "SELECT valid_from, valid_until, value FROM fact_versions ORDER BY recorded_from",
     )
     .fetch_all(fx.store.pool())
     .await
     .expect("read versions");
 
     assert_eq!(rows.len(), 2, "the old version is closed, not duplicated");
-    assert_eq!(
-        rows[0].1,
-        Some(day(2027, 7, 1)),
-        "the old value ends on the move date"
-    );
+    // The old version keeps the interval it asserted; it is superseded by
+    // `recorded_to` rather than rewritten, so a query at the earlier revision
+    // still sees it as open-ended.
+    assert_eq!(rows[0].1, None, "the old version's interval is untouched");
     assert_eq!(rows[1].0, day(2027, 7, 1));
-    assert_eq!(rows[1].1, None);
+
+    // What changes is the resolved value: before the move date it is the old
+    // one, from the move date it is the new one.
+    let before = fx
+        .store
+        .read_attribute(tokiori_pg::ReadAttribute {
+            scope: fx.scope.clone(),
+            entity_type: "employee".to_owned(),
+            entity_id: "E001".to_owned(),
+            attribute: "name".to_owned(),
+            valid_at: day(2027, 6, 30),
+            known_revision: None,
+        })
+        .await
+        .expect("read before");
+    let after = fx
+        .store
+        .read_attribute(tokiori_pg::ReadAttribute {
+            scope: fx.scope.clone(),
+            entity_type: "employee".to_owned(),
+            entity_id: "E001".to_owned(),
+            attribute: "name".to_owned(),
+            valid_at: day(2027, 7, 1),
+            known_revision: None,
+        })
+        .await
+        .expect("read after");
+
+    assert_eq!(before.value, Some(serde_json::json!("Alice")));
+    assert_eq!(after.value, Some(serde_json::json!("Alicia")));
 
     fx.cleanup().await;
 }

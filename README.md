@@ -9,7 +9,7 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 - **Operational:** 異動などの業務操作と、その結果として生じる状態変更・イベントを監査可能に記録する。
 - **PostgreSQL-first:** 利用者に業務ごとの履歴テーブルを手作業で設計させない。
 
-## いまできること（P0・P1・P2）
+## いまできること（P0・P1・P2・P3）
 
 モデルを宣言し、社員・部署・所属を**現在値として**登録・取得できます。業務ごとの SQL テーブルを書く必要はありません。
 
@@ -105,6 +105,25 @@ tokiori --format json outbox claim --limit 100
 tokiori outbox ack --event-id <uuid>
 ```
 
+### 関係をたどる（P3）
+
+SQL の join を書かずに、関係と時点を指定して問い合わせられます。
+
+```sh
+# 社員が所属する部署（7 月 10 日時点）
+tokiori query run --from-type employee --from E001 \
+  --relation membership --path employee=department --valid-at 2027-07-10
+
+# ある時点の組織図
+tokiori query org-chart --valid-at 2027-07-10
+```
+
+`--known-revision` を付ければ、その時点で知っていた内容で答えられます。
+
+- **探索は無制限ではありません。** `--max-depth`（既定 4、上限 8）と `--max-rows`（既定 1000、上限 10000）を必ず持ち、上限超過は拒否、行数打ち切りは `truncated` で明示します。
+- **値はすべてパラメータとして束縛されます。** SQL 識別子は検証済みモデルからだけ生成し、利用者入力は構造に入りません。
+- 未定義の role・関係・属性はコンパイル前に拒否されます。
+
 詳しい手順は [examples/organization/README.md](examples/organization/README.md)。
 
 ## 想定する利用の流れ
@@ -163,12 +182,13 @@ P0 宣言的モデル / 汎用 CRUD・最小 CLI → P1 Bitemporal Engine → P2
 
 ## Status
 
-**P0–P2 実装済み。P3 以降は未実装。**
+**P0–P3 実装済み。P4 は未実装。**
 
 - 実装済み（P0）: モデル宣言・検証・冪等な適用、entity / relation の登録・取得、最小 CLI、noprop PBT、parser fuzz、PostgreSQL 18 での `ORG-001` / `ORG-002`。
 - 実装済み（P1）: 有効時刻と記録 revision の二時点履歴、遡及訂正、将来発令、tombstone、P0 からの cutover、`ORG-003` / `ORG-004`。
 - 実装済み（P2）: 異動・取消の操作、冪等な再送と conflict、単一コミットの outbox、at-least-once 配信、`ORG-005`。
-- 未実装: 横断クエリ（`ORG-006`）、API / SDK / UI（`ORG-007`）、`known_at`、exactly-once 配信、Verus 証明。
+- 実装済み（P3）: 型付き Query AST、パラメータ化 SQL コンパイラ、探索の上限と循環停止、時点指定の組織図、`ORG-006`。
+- 未実装: API / SDK / UI（`ORG-007`）、`known_at`、exactly-once 配信、EXPLAIN に基づく性能計測、Verus 証明。
 - 実行した検証と未実行の検証は [docs/testing/p0-evidence.md](docs/testing/p0-evidence.md) と [docs/testing/p1-evidence.md](docs/testing/p1-evidence.md) に記録しています。
 
 設計判断は [docs/adr/](docs/adr/) にあります。
