@@ -11,6 +11,7 @@ mod operations;
 mod revision;
 mod roles;
 mod store;
+mod transfer;
 
 pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};
@@ -21,6 +22,7 @@ pub use roles::{ReadRole, RoleAnswer, SetRole};
 pub use store::{
     EntityRow, NewEntity, NewRelation, PgStore, RelationRow, connect, migrate, migrate_with,
 };
+pub use transfer::{OperationOutcome, Transfer};
 
 /// Migrations embedded at build time so the binary needs no migration directory
 /// at run time.

@@ -8,10 +8,12 @@ use chrono::NaiveDate;
 use tokiori_model::{FactVersion, ValidTime, resolve_cloned};
 
 use crate::error::PgError;
+use sqlx::{Postgres, Transaction};
+
 use crate::store::PgStore;
 
 /// A stored role row: valid interval, recorded interval, and participant.
-type StoredRoleVersion = (NaiveDate, Option<NaiveDate>, i64, Option<i64>, String);
+pub(crate) type StoredRoleVersion = (NaiveDate, Option<NaiveDate>, i64, Option<i64>, String);
 
 /// A request to record who fills a role.
 #[derive(Debug, Clone)]
@@ -48,8 +50,22 @@ impl PgStore {
     /// Records a participant for a role, closing the version it replaces.
     pub async fn set_role(&self, input: SetRole) -> Result<u64, PgError> {
         let mut tx = self.pool().begin().await?;
+        let revision = set_role_in(&mut tx, &input).await?;
+        tx.commit().await?;
+        Ok(revision)
+    }
+}
 
-        let model = PgStore::load_latest_model(&mut tx, &input.scope).await?;
+/// Applies a role change inside an existing transaction.
+///
+/// Operations call this so the role change, the operation record, and the
+/// outbox event commit together or not at all.
+pub(crate) async fn set_role_in(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &SetRole,
+) -> Result<u64, PgError> {
+    {
+        let model = PgStore::load_latest_model(tx, &input.scope).await?;
         let Some(relation) = model.relations.get(&input.relation_type) else {
             return Err(PgError::RelationTypeNotFound {
                 relation_type: input.relation_type.clone(),
@@ -68,7 +84,7 @@ impl PgStore {
         )
         .bind(&input.scope)
         .bind(&input.participant_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         match actual {
             None => {
@@ -88,7 +104,7 @@ impl PgStore {
             Some(_) => {}
         }
 
-        let revision = crate::revision::next_revision_in(&mut tx, &input.scope).await?;
+        let revision = crate::revision::next_revision_in(tx, &input.scope).await?;
         let recorded = i64::try_from(revision).expect("revision fits");
 
         // Close overlapping current versions and cut the overlap out of them.
@@ -108,7 +124,7 @@ impl PgStore {
         .bind(recorded)
         .bind(input.valid_time.from)
         .bind(input.valid_time.until)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
         sqlx::query(
@@ -126,13 +142,14 @@ impl PgStore {
         .bind(&input.role)
         .bind(&role.entity)
         .bind(&input.participant_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
 
-        tx.commit().await?;
         Ok(revision)
     }
+}
 
+impl PgStore {
     /// Reads who filled a role as of a date and revision.
     pub async fn read_role(&self, input: ReadRole) -> Result<RoleAnswer, PgError> {
         let latest = crate::revision::latest_revision(self.pool(), &input.scope).await?;

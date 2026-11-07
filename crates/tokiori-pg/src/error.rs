@@ -84,6 +84,8 @@ pub enum PgError {
         stored: String,
         incoming: String,
     },
+    #[error("{operation} precondition failed: {detail}")]
+    PreconditionFailed { operation: String, detail: String },
     #[error("valid interval starting {from} and ending {until} is empty")]
     EmptyInterval { from: String, until: String },
     #[error("database error: {0}")]
@@ -113,6 +115,7 @@ impl PgError {
             Self::UnknownRevision { .. } => "unknown_revision",
             Self::OperationReplayed { .. } => "operation_replayed",
             Self::IdempotencyConflict { .. } => "idempotency_conflict",
+            Self::PreconditionFailed { .. } => "precondition_failed",
             Self::EmptyInterval { .. } => "empty_interval",
             Self::Db(_) => "database_error",
             Self::Migrate(_) => "migration_error",
