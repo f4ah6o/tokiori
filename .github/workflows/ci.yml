@@ -57,7 +57,10 @@ jobs:
           - "55432:5432"
         # Keep this on one line: a folded scalar (">-") is valid YAML but
         # actrun's parser rejects it, which hides the rest of the job.
-        options: --health-cmd "pg_isready -U tokiori" --health-interval 5s --health-timeout 5s --health-retries 20
+        # `pg_isready` takes no `-U`: actrun splits options on whitespace, so a
+        # quoted argument would reach docker as a flag. The service env already
+        # tells it which user to check, and a 3s interval fits actrun's wait.
+        options: --health-cmd "pg_isready" --health-interval 3s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable

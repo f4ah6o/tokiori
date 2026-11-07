@@ -6,7 +6,24 @@
 # silently test a different tree than the one being edited.
 workspace_mode = "local"
 
+# The workflow already declares which third-party actions it runs; prompting
+# for each one makes unattended local runs impossible.
+trust_actions = true
+
 # actrun does not implement the toolchain actions; the local Rust toolchain is
 # the one under test, so the setup step only reports what is installed.
 [override."dtolnay/rust-toolchain"]
 run = "rustc --version && cargo --version"
+
+# actrun's built-in cache action does not resolve `${{ }}` inside `with:`, so
+# the step fails with "cache requires with.key". A local run does not need the
+# cache, and the Rust build cache is not what this gate is checking.
+[override."actions/cache"]
+run = "echo 'actions/cache skipped locally; actrun cannot resolve with: expressions'"
+
+# The fuzz job needs a nightly toolchain and cargo-fuzz, which actrun cannot
+# install (the install-action also writes outside the workspace). Its steps are
+# guarded by `if: env.ACTRUN_LOCAL != 'true'`, but actrun still expands the
+# composite action, so the install is replaced by a no-op locally.
+[override."taiki-e/install-action"]
+run = "echo 'cargo-fuzz install skipped locally; actrun cannot provide it'"
