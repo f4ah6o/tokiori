@@ -44,9 +44,9 @@ impl PgStore {
 
         let revision = crate::revision::next_revision_in(&mut tx, &input.scope).await?;
 
-        // Close every still-current version that overlaps the new valid
-        // interval, and cut the overlap out of it. The closed row keeps its
-        // own history; only the part the new value takes over is removed.
+        // Close the still-current versions this change supersedes. Only the
+        // recorded interval is closed: a version's valid interval describes
+        // what was true, and a later revision must not rewrite it.
         sqlx::query(
             "UPDATE fact_versions \
              SET recorded_to = $5, \
