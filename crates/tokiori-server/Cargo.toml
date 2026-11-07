@@ -1,0 +1,22 @@
+[package]
+name = "tokiori-server"
+description = "Axum HTTP API for Tokiori, built on the pure authorization boundary"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokiori-model.workspace = true
+tokiori-pg.workspace = true
+tower.workspace = true
+
+[dev-dependencies]
+noprop.workspace = true
+
+[lints]
+workspace = true
