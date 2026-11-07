@@ -5,7 +5,10 @@ use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Map, Value, json};
 use tokiori_model::{Model, ValidTime, canonical_json, parse_model_str};
-use tokiori_pg::{ApplyOutcome, EntityRow, NewEntity, NewRelation, PgError, PgStore, RelationRow};
+use tokiori_pg::{
+    ApplyOutcome, Cutover, EntityRow, NewEntity, NewRelation, PgError, PgStore, ReadAttribute,
+    ReadRole, RelationRow, SetAttribute, SetRole,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -49,6 +52,89 @@ enum Command {
     Relation {
         #[command(subcommand)]
         action: RelationAction,
+    },
+    /// Record or read an attribute as of a date and revision.
+    Attribute {
+        #[command(subcommand)]
+        action: AttributeAction,
+    },
+    /// Record or read who fills a role.
+    Role {
+        #[command(subcommand)]
+        action: RoleAction,
+    },
+    /// Import P0's current state as the first revision.
+    Cutover {
+        /// The date after which imported facts are asserted.
+        #[arg(long)]
+        at: NaiveDate,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RoleAction {
+    /// Record a participant, closing the version it replaces.
+    Set {
+        #[arg(long = "type")]
+        relation_type: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        role: String,
+        /// The participant entity id.
+        #[arg(long)]
+        participant: String,
+        #[arg(long)]
+        valid_from: NaiveDate,
+        #[arg(long)]
+        valid_until: Option<NaiveDate>,
+    },
+    /// Read who filled a role as of a date and revision.
+    Get {
+        #[arg(long = "type")]
+        relation_type: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        role: String,
+        #[arg(long)]
+        valid_at: NaiveDate,
+        #[arg(long)]
+        known_revision: Option<u64>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AttributeAction {
+    /// Record a value, closing the version it replaces.
+    Set {
+        #[arg(long = "type")]
+        owner_type: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        attribute: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        valid_from: NaiveDate,
+        #[arg(long)]
+        valid_until: Option<NaiveDate>,
+    },
+    /// Read a value as of a date and revision.
+    Get {
+        #[arg(long = "type")]
+        owner_type: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        attribute: String,
+        /// The business date to ask about.
+        #[arg(long)]
+        valid_at: NaiveDate,
+        /// The revision to answer as of; defaults to the newest.
+        #[arg(long)]
+        known_revision: Option<u64>,
     },
 }
 
@@ -191,6 +277,63 @@ pub async fn run() -> Result<(), Failure> {
                 relation_get(ctx, &relation_type, &id).await
             }
         },
+        Command::Attribute { action } => match action {
+            AttributeAction::Set {
+                owner_type,
+                id,
+                attribute,
+                value,
+                valid_from,
+                valid_until,
+            } => {
+                attribute_set(
+                    ctx,
+                    owner_type,
+                    id,
+                    attribute,
+                    value,
+                    valid_from,
+                    valid_until,
+                )
+                .await
+            }
+            AttributeAction::Get {
+                owner_type,
+                id,
+                attribute,
+                valid_at,
+                known_revision,
+            } => attribute_get(ctx, owner_type, id, attribute, valid_at, known_revision).await,
+        },
+        Command::Role { action } => match action {
+            RoleAction::Set {
+                relation_type,
+                id,
+                role,
+                participant,
+                valid_from,
+                valid_until,
+            } => {
+                role_set(
+                    ctx,
+                    relation_type,
+                    id,
+                    role,
+                    participant,
+                    valid_from,
+                    valid_until,
+                )
+                .await
+            }
+            RoleAction::Get {
+                relation_type,
+                id,
+                role,
+                valid_at,
+                known_revision,
+            } => role_get(ctx, relation_type, id, role, valid_at, known_revision).await,
+        },
+        Command::Cutover { at } => cutover(ctx, at).await,
     }
 }
 
@@ -302,6 +445,171 @@ async fn relation_get(ctx: Context<'_>, relation_type: &str, id: &str) -> Result
     emit(ctx.format, &relation_json(&row), || {
         format!("{} {}", row.relation_type, row.id)
     });
+    Ok(())
+}
+
+async fn attribute_set(
+    ctx: Context<'_>,
+    owner_type: String,
+    id: String,
+    attribute: String,
+    value: String,
+    valid_from: NaiveDate,
+    valid_until: Option<NaiveDate>,
+) -> Result<(), Failure> {
+    let valid_time = match valid_until {
+        None => ValidTime::unbounded_from(valid_from),
+        Some(until) => ValidTime::bounded(valid_from, until)
+            .map_err(|err| Failure::new("empty_interval", err.to_string()))?,
+    };
+    let store = open(ctx.database_url).await?;
+    let revision = store
+        .set_attribute(SetAttribute {
+            scope: ctx.scope.to_owned(),
+            entity_type: owner_type.clone(),
+            entity_id: id.clone(),
+            attribute: attribute.clone(),
+            value: Value::String(value),
+            valid_time,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({ "revision": revision, "owner_type": owner_type, "id": id, "attribute": attribute }),
+        || format!("recorded {owner_type} {id} {attribute} at revision {revision}"),
+    );
+    Ok(())
+}
+
+async fn attribute_get(
+    ctx: Context<'_>,
+    owner_type: String,
+    id: String,
+    attribute: String,
+    valid_at: NaiveDate,
+    known_revision: Option<u64>,
+) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let answer = store
+        .read_attribute(ReadAttribute {
+            scope: ctx.scope.to_owned(),
+            entity_type: owner_type,
+            entity_id: id,
+            attribute,
+            valid_at,
+            known_revision,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({
+            "value": answer.value,
+            "known_revision": answer.known_revision,
+            "valid_at": answer.valid_at,
+        }),
+        || match &answer.value {
+            Some(value) => format!("{value}"),
+            None => "(no value)".to_owned(),
+        },
+    );
+    Ok(())
+}
+
+async fn role_set(
+    ctx: Context<'_>,
+    relation_type: String,
+    id: String,
+    role: String,
+    participant: String,
+    valid_from: NaiveDate,
+    valid_until: Option<NaiveDate>,
+) -> Result<(), Failure> {
+    let valid_time = match valid_until {
+        None => ValidTime::unbounded_from(valid_from),
+        Some(until) => ValidTime::bounded(valid_from, until)
+            .map_err(|err| Failure::new("empty_interval", err.to_string()))?,
+    };
+    let store = open(ctx.database_url).await?;
+    let revision = store
+        .set_role(SetRole {
+            scope: ctx.scope.to_owned(),
+            relation_type: relation_type.clone(),
+            relation_id: id.clone(),
+            role: role.clone(),
+            participant_id: participant,
+            valid_time,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({ "revision": revision, "relation_type": relation_type, "id": id, "role": role }),
+        || format!("recorded {relation_type} {id} {role} at revision {revision}"),
+    );
+    Ok(())
+}
+
+async fn role_get(
+    ctx: Context<'_>,
+    relation_type: String,
+    id: String,
+    role: String,
+    valid_at: NaiveDate,
+    known_revision: Option<u64>,
+) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let answer = store
+        .read_role(ReadRole {
+            scope: ctx.scope.to_owned(),
+            relation_type,
+            relation_id: id,
+            role,
+            valid_at,
+            known_revision,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({
+            "participant": answer.participant_id,
+            "known_revision": answer.known_revision,
+            "valid_at": answer.valid_at,
+        }),
+        || match &answer.participant_id {
+            Some(value) => value.clone(),
+            None => "(no participant)".to_owned(),
+        },
+    );
+    Ok(())
+}
+
+async fn cutover(ctx: Context<'_>, at: NaiveDate) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let outcome = store
+        .cutover(Cutover {
+            scope: ctx.scope.to_owned(),
+            at,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({
+            "revision": outcome.revision,
+            "created": outcome.created,
+            "entities": outcome.entities,
+            "relations": outcome.relations,
+        }),
+        || {
+            format!(
+                "cutover at revision {} ({})",
+                outcome.revision,
+                if outcome.created {
+                    "created"
+                } else {
+                    "already done"
+                }
+            )
+        },
+    );
     Ok(())
 }
 

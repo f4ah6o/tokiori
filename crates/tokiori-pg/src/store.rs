@@ -405,6 +405,16 @@ impl PgStore {
         Ok(participants)
     }
 
+    /// The next revision to assign in this store's scope.
+    pub async fn next_revision(&self, scope: &str) -> Result<u64, PgError> {
+        crate::revision::next_revision(&self.pool, scope).await
+    }
+
+    /// The newest revision assigned in a scope, if any.
+    pub async fn latest_revision(&self, scope: &str) -> Result<Option<u64>, PgError> {
+        crate::revision::latest_revision(&self.pool, scope).await
+    }
+
     /// Takes a row lock on the newest model so concurrent writers in one scope
     /// serialize on a stable definition.
     async fn lock_latest_model(
@@ -423,6 +433,36 @@ impl PgStore {
         row.ok_or_else(|| PgError::ModelNotFound {
             scope: scope.to_owned(),
         })
+    }
+
+    /// Loads the newest applied model using an existing transaction.
+    pub(crate) async fn load_latest_model(
+        tx: &mut Transaction<'_, Postgres>,
+        scope: &str,
+    ) -> Result<Model, PgError> {
+        let row: Option<(String, i32)> = sqlx::query_as(
+            "SELECT model, version FROM models WHERE scope_id = $1 \
+             ORDER BY version DESC LIMIT 1 FOR SHARE",
+        )
+        .bind(scope)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((model, version)) = row else {
+            return Err(PgError::ModelNotFound {
+                scope: scope.to_owned(),
+            });
+        };
+        let definition: Value = sqlx::query_scalar(
+            "SELECT definition FROM models WHERE scope_id = $1 AND model = $2 AND version = $3",
+        )
+        .bind(scope)
+        .bind(&model)
+        .bind(version)
+        .fetch_one(&mut **tx)
+        .await?;
+        let text = serde_json::to_string(&definition).expect("stored definition is JSON");
+        tokiori_model::parse_model_str(&text)
+            .map_err(|err| PgError::Db(sqlx::Error::Decode(Box::new(err))))
     }
 
     async fn load_model_in(
@@ -477,6 +517,85 @@ fn as_object(value: Value) -> Map<String, Value> {
         Value::Object(map) => map,
         _ => Map::new(),
     }
+}
+
+/// Checks that a value fits the declared type of one attribute.
+pub(crate) fn check_attribute_value(
+    attribute: &str,
+    declared: AttributeType,
+    value: &Value,
+) -> Result<(), PgError> {
+    if value_matches(declared, value) {
+        return Ok(());
+    }
+    Err(PgError::InvalidAttribute {
+        owner: attribute.to_owned(),
+        attribute: attribute.to_owned(),
+        expected: type_name(declared),
+        actual: value.to_string(),
+    })
+}
+
+/// Loads the declared type of one attribute of one entity.
+///
+/// The entity must exist in the scope and the attribute must be declared on
+/// its type; both are checked here so the caller cannot record a fact about
+/// something the model does not describe.
+pub(crate) async fn load_declared_attribute(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &str,
+    entity_type: &str,
+    entity_id: &str,
+    attribute: &str,
+) -> Result<AttributeType, PgError> {
+    let model = PgStore::load_latest_model(tx, scope).await?;
+
+    // The owner may be an entity or a relation instance; both carry declared
+    // attributes and both can have a history.
+    let declared = if let Some(entity) = model.entities.get(entity_type) {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM entities WHERE scope_id = $1 AND entity_type = $2 AND id = $3",
+        )
+        .bind(scope)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if exists.is_none() {
+            return Err(PgError::ScopeMismatch {
+                scope: scope.to_owned(),
+                entity_type: entity_type.to_owned(),
+                id: entity_id.to_owned(),
+            });
+        }
+        entity.attributes.get(attribute).copied()
+    } else if let Some(relation) = model.relations.get(entity_type) {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM relations WHERE scope_id = $1 AND relation_type = $2 AND id = $3",
+        )
+        .bind(scope)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if exists.is_none() {
+            return Err(PgError::ScopeMismatch {
+                scope: scope.to_owned(),
+                entity_type: entity_type.to_owned(),
+                id: entity_id.to_owned(),
+            });
+        }
+        relation.attributes.get(attribute).copied()
+    } else {
+        return Err(PgError::EntityTypeNotFound {
+            entity_type: entity_type.to_owned(),
+        });
+    };
+
+    declared.ok_or_else(|| PgError::UnknownAttribute {
+        owner: entity_type.to_owned(),
+        attribute: attribute.to_owned(),
+    })
 }
 
 fn check_attributes(

@@ -262,3 +262,111 @@ fn an_invalid_model_file_is_rejected_before_any_database_access() {
             .contains("person")
     );
 }
+
+/// Seeds the organization and records the ORG-004 history through the CLI.
+///
+/// Returns the scope so callers can query it.
+fn seed_correction_history(url: &str) -> String {
+    let scope = unique_scope();
+    let model = example("model.json");
+    let model = model.to_str().expect("utf-8 path");
+
+    json(&tokiori(url, &scope, &["model", "apply", "--file", model]));
+    for (entity_type, id) in [
+        ("employee", "E001"),
+        ("department", "D-SALES"),
+        ("department", "D-PLANNING"),
+    ] {
+        json(&tokiori(
+            url,
+            &scope,
+            &["entity", "create", "--type", entity_type, "--id", id],
+        ));
+    }
+    json(&tokiori(
+        url,
+        &scope,
+        &[
+            "relation",
+            "create",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "employee=E001",
+            "--role",
+            "department=D-SALES",
+            "--valid-from",
+            "2027-04-01",
+        ],
+    ));
+
+    // r1 baseline, r2 move on 7/1, r3/r4 correct the move to 7/15.
+    set_department(url, &scope, "D-SALES", "2027-04-01", None);
+    set_department(url, &scope, "D-PLANNING", "2027-07-01", None);
+    set_department(url, &scope, "D-SALES", "2027-07-01", Some("2027-07-15"));
+    set_department(url, &scope, "D-PLANNING", "2027-07-15", None);
+    scope
+}
+
+fn set_department(url: &str, scope: &str, participant: &str, from: &str, until: Option<&str>) {
+    let mut args = vec![
+        "role",
+        "set",
+        "--type",
+        "membership",
+        "--id",
+        "M001",
+        "--role",
+        "department",
+        "--participant",
+        participant,
+        "--valid-from",
+        from,
+    ];
+    if let Some(until) = until {
+        args.push("--valid-until");
+        args.push(until);
+    }
+    json(&tokiori(url, scope, &args));
+}
+
+fn department_at(url: &str, scope: &str, valid_at: &str, revision: &str) -> Value {
+    json(&tokiori(
+        url,
+        scope,
+        &[
+            "role",
+            "get",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--valid-at",
+            valid_at,
+            "--known-revision",
+            revision,
+        ],
+    ))
+}
+
+#[test]
+fn a_correction_is_visible_through_the_cli_at_both_revisions() {
+    let Ok(url) = std::env::var("TOKIORI_TEST_DATABASE_URL") else {
+        eprintln!("SKIPPED: TOKIORI_TEST_DATABASE_URL is not set; no CLI evidence");
+        return;
+    };
+    let scope = seed_correction_history(&url);
+
+    let before = department_at(&url, &scope, "2027-07-10", "2");
+    let after = department_at(&url, &scope, "2027-07-10", "4");
+
+    assert_eq!(
+        before["participant"], "D-PLANNING",
+        "r2 believed the move was on 7/1"
+    );
+    assert_eq!(after["participant"], "D-SALES", "r4 knows it was on 7/15");
+}

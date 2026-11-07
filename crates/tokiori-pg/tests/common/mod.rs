@@ -4,6 +4,10 @@
 //! rows, and the connection string comes from `TOKIORI_TEST_DATABASE_URL`.
 //! When the variable is unset the tests are skipped loudly instead of passing
 //! silently: a skipped acceptance test is not evidence.
+//!
+//! Each integration test compiles this module separately, so a helper used by
+//! one test file is dead code in the others.
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -41,6 +45,35 @@ pub struct Fixture {
     admin: PgPool,
 }
 
+/// Removes schemas left behind by an earlier run of this same process.
+///
+/// A test that panics never reaches [`Fixture::cleanup`], so the next run of
+/// the same binary reclaims its own leftovers instead of letting them
+/// accumulate.
+async fn reap_stale_schemas(admin: &PgPool) {
+    let prefix = format!("tokiori_test_{}_", std::process::id());
+    let stale: Vec<String> =
+        sqlx::query_scalar("SELECT nspname FROM pg_namespace WHERE nspname LIKE $1")
+            .bind(format!("{prefix}%"))
+            .fetch_all(admin)
+            .await
+            .unwrap_or_default();
+
+    for schema in stale {
+        assert!(
+            schema
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "stale schema name must be a plain identifier: {schema}"
+        );
+        let _ = sqlx::query(AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
+        .execute(admin)
+        .await;
+    }
+}
+
 /// Returns `None` when `TOKIORI_TEST_DATABASE_URL` is not set, printing why.
 pub async fn fixture() -> Option<Fixture> {
     let Ok(url) = std::env::var("TOKIORI_TEST_DATABASE_URL") else {
@@ -65,6 +98,7 @@ pub async fn fixture() -> Option<Fixture> {
         .connect(&url)
         .await
         .expect("connect to test database");
+    reap_stale_schemas(&admin).await;
     sqlx::query(AssertSqlSafe(format!(
         "DROP SCHEMA IF EXISTS {schema} CASCADE"
     )))

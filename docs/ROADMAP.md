@@ -1,6 +1,6 @@
 # Tokiori: P0–P4 実装ロードマップ
 
-- 状態: **P0 実装済み / P1 以降は計画**。P0 の項目は [docs/testing/p0-evidence.md](testing/p0-evidence.md) の実行ログで確認できる。P1 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
+- 状態: **P0・P1 実装済み / P2 以降は計画**。P0 は [docs/testing/p0-evidence.md](testing/p0-evidence.md)、P1 は [docs/testing/p1-evidence.md](testing/p1-evidence.md) の実行ログで確認できる。P2 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
 - 対象: PostgreSQL を永続化先とする汎用 Temporal + Relationship データモデリングエンジン
 - 方針: TDD を実装の基本サイクルにし、sile/noprop による PBT と cargo-fuzz による fuzzing を P0 から継続する。
 - PDD: [Proof-Driven Development 導入方針](PDD.md) に沿い、承認済み intent・形式仕様・信頼境界・検証証拠の対応を明示する。**研究プロトタイプの Verus 証明は段階的な導入候補であり、未実装。**
@@ -235,13 +235,15 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 **目的:** 同じ関係を現在・過去・未来と、当時の認識の両面から取得できる。
 
 **実装**
-- [ ] valid_time 半開区間の標準化、open-ended 値、境界の扱い
-- [ ] スコープ別 recorded revision / commit order の定義。`known_at` の確定 revision への写像は ADR で実現可能性を検証し、公開は必須としない
-- [ ] 属性・関係・ロールの version close + insert を同一トランザクションで処理
-- [ ] 現在の取得、`valid_at`、`known_revision` の読み取り API (`known_at` は写像検証後)
-- [ ] 遡及訂正、将来発令、削除の tombstone/終了を明示的に表す
-- [ ] 属する期間の重複防止、空白期間、競合・再試行ポリシー
-- [ ] PostgreSQL 障害・ロールバック・並列更新の統合テスト
+- [x] valid_time 半開区間の標準化、open-ended 値、境界の扱い
+- [x] スコープ別 recorded revision / commit order の定義（[ADR 0005](adr/0005-p1-bitemporal-engine.md)）。`known_at` は写像を実証できないため**公開しない**
+- [x] 属性・関係・ロールの version close + insert を同一トランザクションで処理
+- [x] 現在の取得、`valid_at`、`known_revision` の読み取り API
+- [x] 遡及訂正、将来発令、削除の tombstone/終了を明示的に表す
+- [x] 属する期間の重複防止、空白期間、競合・再試行ポリシー
+- [x] PostgreSQL 障害・ロールバック・並列更新の統合テスト
+
+実行した検証は [docs/testing/p1-evidence.md](testing/p1-evidence.md) に記録している。
 
 **Red → Green の代表テスト (What)**
 - 7 月 1 日ちょうどで旧所属は終わり新所属が始まる
