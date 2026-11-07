@@ -105,15 +105,15 @@ jobs:
         if: env.ACTRUN_LOCAL != 'true'
         with:
           tool: cargo-fuzz
-      # The repository pins `stable` for the product crates; the fuzz workspace
-      # needs nightly, so select it explicitly for this directory.
-      - name: Use nightly for the fuzz workspace
-        if: env.ACTRUN_LOCAL != 'true'
-        run: rustup override set nightly
       - name: Fuzz the model parser
         if: env.ACTRUN_LOCAL != 'true'
         working-directory: fuzz
-        run: cargo fuzz run fuzz_model_input -- -runs=20000 -max_total_time=120
+        env:
+          # AddressSanitizer cannot link a statically linked libc, and the
+          # nightly toolchain's default host target is musl. Name the GNU
+          # target explicitly so the sanitizer has a dynamic libc.
+          CARGO_TARGET: x86_64-unknown-linux-gnu
+        run: cargo fuzz run --target "$CARGO_TARGET" fuzz_model_input -- -runs=20000 -max_total_time=120
       - name: Keep crashing inputs
         if: failure()
         uses: actions/upload-artifact@v7.0.1
