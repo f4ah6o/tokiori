@@ -134,15 +134,20 @@ fn any_query_answers_like_the_interpreter() -> noprop::TestResult {
         .expect("runtime");
     let mut runner = noprop::Runner::new(seed_value);
 
-    for _ in 0..CASES {
-        let Some(fx) = runtime.block_on(fixture()) else {
-            return Ok(());
-        };
-        runtime.block_on(seed(&fx));
-        let latest = runtime
-            .block_on(fx.store.latest_revision(&fx.scope))
-            .expect("revision");
+    // One fixture for every case. Creating a fixture per case meant opening and
+    // closing five connections 150 times inside a runtime this test drives by
+    // hand, and the pool occasionally read from a connection it had just
+    // closed ("unknown message type"). The cases do not need isolated schemas:
+    // they only read, and the seed is written once.
+    let Some(fx) = runtime.block_on(fixture()) else {
+        return Ok(());
+    };
+    runtime.block_on(seed(&fx));
+    let latest = runtime
+        .block_on(fx.store.latest_revision(&fx.scope))
+        .expect("revision");
 
+    for _ in 0..CASES {
         let outcome = runner.run(8, |ctx| {
             let query = sample_query(ctx, latest);
             runtime.block_on(async {
@@ -163,8 +168,9 @@ fn any_query_answers_like_the_interpreter() -> noprop::TestResult {
             Ok(())
         });
 
-        runtime.block_on(fx.cleanup());
         outcome?;
     }
+
+    runtime.block_on(fx.cleanup());
     Ok(())
 }

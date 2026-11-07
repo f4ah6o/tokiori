@@ -266,3 +266,245 @@ async fn role_read_names_the_participant() {
     assert_eq!(json["valid_at"], "2027-06-01");
     fx.cleanup().await;
 }
+
+use tokiori_model::{EntityRef, Hop, Limits, Query, Select};
+use tokiori_pg::Transfer;
+
+/// POSTs a JSON payload to the router and returns the status and JSON body.
+async fn post(
+    app: Router,
+    path: &str,
+    authorization: Option<&str>,
+    body: String,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(value) = authorization {
+        builder = builder.header("authorization", value);
+    }
+    let request = builder.body(Body::from(body)).expect("request");
+    let response = app.oneshot(request).await.expect("infallible service");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    (status, serde_json::from_slice(&body).expect("JSON body"))
+}
+
+/// A query from one employee across the membership, to a role's participants.
+fn employee_query(to_role: &str, valid_at: NaiveDate) -> Query {
+    Query {
+        start: EntityRef {
+            entity_type: "employee".to_owned(),
+            id: "E001".to_owned(),
+        },
+        traversal: vec![Hop {
+            relation_type: "membership".to_owned(),
+            from_role: "employee".to_owned(),
+            to_role: to_role.to_owned(),
+        }],
+        select: Select::Ids,
+        valid_at,
+        known_revision: None,
+        limits: Limits::default(),
+    }
+}
+
+/// Adds the departments and the one membership on top of what `seed` made: the
+/// chart has nothing to look across without them, and a transfer needs
+/// somewhere to move the employee to.
+async fn seed_chart(fx: &common::Fixture) {
+    for id in ["D-SALES", "D-HR"] {
+        fx.store
+            .create_entity(NewEntity {
+                scope: fx.scope.clone(),
+                entity_type: "department".to_owned(),
+                id: id.to_owned(),
+                attributes: common::attributes(&[("name", id)]),
+            })
+            .await
+            .expect("create department");
+    }
+    fx.store
+        .create_relation(NewRelation {
+            scope: fx.scope.clone(),
+            relation_type: "membership".to_owned(),
+            id: "M001".to_owned(),
+            roles: std::collections::BTreeMap::from([
+                ("employee".to_owned(), "E001".to_owned()),
+                ("department".to_owned(), "D-SALES".to_owned()),
+            ]),
+            attributes: common::attributes(&[]),
+            valid_time: ValidTime::unbounded_from(day(2027, 4, 1)),
+        })
+        .await
+        .expect("create membership");
+}
+
+#[tokio::test]
+async fn a_query_over_the_membership_returns_the_department() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let query = employee_query("department", day(2027, 7, 10));
+    let (status, json) = post(
+        app,
+        "/v1/query",
+        Some("Bearer ci"),
+        serde_json::to_string(&query).expect("query serializes"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["scope"], json!(fx.scope));
+    assert_eq!(json["rows"][0]["id"], "D-SALES");
+    assert!(json["rows"][0]["value"].is_null());
+    assert_eq!(json["truncated"], false);
+    assert_eq!(json["known_revision"].as_u64(), Some(1));
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_query_naming_an_undeclared_role_is_400_invalid_query() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    let app = app_for(&fx);
+
+    // The membership declares `employee` and `department`; `ghost` is nothing.
+    let query = employee_query("ghost", day(2027, 7, 10));
+    let (status, json) = post(
+        app,
+        "/v1/query",
+        Some("Bearer ci"),
+        serde_json::to_string(&query).expect("query serializes"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["code"], "invalid_query");
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_request_body_that_is_not_a_query_is_400_invalid_request() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    let app = app_for(&fx);
+
+    // Valid JSON, but nothing in it names a start, a traversal, or a select.
+    let (status, json) = post(
+        app,
+        "/v1/query",
+        Some("Bearer ci"),
+        json!({ "just": "not a query" }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json["code"], "invalid_request");
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_org_chart_lists_the_employee_with_the_department() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let (status, json) = get(app, "/v1/org-chart?valid_at=2027-07-10", Some("Bearer ci")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["scope"], json!(fx.scope));
+    assert_eq!(json["valid_at"], "2027-07-10");
+    assert_eq!(json["rows"][0]["employee"], "E001");
+    assert_eq!(json["rows"][0]["department"], "D-SALES");
+    assert_eq!(json["known_revision"].as_u64(), Some(1));
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_org_chart_at_an_earlier_known_revision_shows_what_was_believed_then() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    // The first read names the revision its answer was resolved at.
+    let (status, json) = get(
+        app.clone(),
+        "/v1/org-chart?valid_at=2027-07-10",
+        Some("Bearer ci"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["rows"][0]["department"], "D-SALES");
+    let pre_transfer = json["known_revision"].as_u64().expect("known_revision");
+
+    // The transfer moves the employee and takes the next revision.
+    fx.store
+        .transfer(Transfer {
+            scope: fx.scope.clone(),
+            employee: "E001".to_owned(),
+            to_department: "D-HR".to_owned(),
+            effective_on: day(2027, 7, 1),
+            request_id: "req-1".to_owned(),
+            reason: "rotation".to_owned(),
+            actor: "ci".to_owned(),
+        })
+        .await
+        .expect("transfer");
+
+    // Without a revision the chart answers at the newest one.
+    let (status, json) = get(
+        app.clone(),
+        "/v1/org-chart?valid_at=2027-07-10",
+        Some("Bearer ci"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["rows"][0]["department"], "D-HR");
+
+    // At the pre-transfer revision the old department is what was believed.
+    let (status, json) = get(
+        app,
+        &format!("/v1/org-chart?valid_at=2027-07-10&known_revision={pre_transfer}"),
+        Some("Bearer ci"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["rows"][0]["department"], "D-SALES");
+    assert_eq!(json["known_revision"].as_u64(), Some(pre_transfer));
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_request_without_a_token_to_query_is_401() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    let app = app_for(&fx);
+
+    let query = employee_query("department", day(2027, 7, 10));
+    let (status, json) = post(
+        app,
+        "/v1/query",
+        None,
+        serde_json::to_string(&query).expect("query serializes"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["code"], "missing_token");
+    fx.cleanup().await;
+}

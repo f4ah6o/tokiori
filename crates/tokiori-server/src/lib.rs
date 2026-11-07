@@ -12,12 +12,12 @@ mod tokens;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
-use axum::routing::get;
+use axum::routing::{get, post};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokiori_model::canonical_json;
-use tokiori_pg::{ReadAttribute, ReadRole};
+use tokiori_model::{Query as QueryAst, canonical_json};
+use tokiori_pg::{OrgChart, ReadAttribute, ReadRole};
 
 pub use authorize::{ApiToken, AuthDecision, DenialReason, authorize};
 pub use error::ApiError;
@@ -41,6 +41,8 @@ pub fn router(state: AppState) -> axum::Router {
             "/v1/roles/{relation_type}/{relation_id}/{role}",
             get(get_role),
         )
+        .route("/v1/query", post(post_query))
+        .route("/v1/org-chart", get(get_org_chart))
         .with_state(state)
 }
 
@@ -183,5 +185,65 @@ async fn get_role(
         "participant_id": answer.participant_id,
         "known_revision": answer.known_revision,
         "valid_at": answer.valid_at.to_string(),
+    })))
+}
+
+/// The rows a query reached, in the token's scope.
+///
+/// The scope comes from the token, never from the body. A body that is not a
+/// `Query` at all is 400 `invalid_request`; a body that is one but names
+/// something the model does not declare is 400 `invalid_query`, mapped once in
+/// the store's error conversion.
+async fn post_query(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let query: QueryAst = serde_json::from_value(body).map_err(ApiError::invalid_request)?;
+    let result = state.store.query(&token.scope, &query).await?;
+    let rows: Vec<Value> = result
+        .rows
+        .iter()
+        .map(|row| json!({ "id": row.id, "value": row.value }))
+        .collect();
+    Ok(Json(json!({
+        "scope": token.scope,
+        "rows": rows,
+        "truncated": result.truncated,
+        "known_revision": result.known_revision,
+    })))
+}
+
+/// Every employee and the department they were in, as of a date and revision.
+///
+/// The query string is the one the other temporal reads take: `valid_at` is
+/// required, `known_revision` is optional and answered back as it was resolved,
+/// so the exact chart a caller saw can be asked for again.
+async fn get_org_chart(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ReadQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let (valid_at, known_revision) = parse_read_query(&query)?;
+    let resolved_revision = if let Some(revision) = known_revision {
+        Some(revision)
+    } else {
+        state.store.latest_revision(&token.scope).await?
+    };
+    let rows = state
+        .store
+        .org_chart(OrgChart {
+            scope: token.scope.clone(),
+            valid_at,
+            known_revision,
+        })
+        .await?;
+    Ok(Json(json!({
+        "scope": token.scope,
+        "valid_at": valid_at.to_string(),
+        "known_revision": resolved_revision,
+        "rows": rows,
     })))
 }

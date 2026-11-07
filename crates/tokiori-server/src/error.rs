@@ -68,6 +68,15 @@ impl ApiError {
             message: format!("invalid query: {what}"),
         }
     }
+
+    /// A 400 for a request body that does not parse as the expected type.
+    pub fn invalid_request(what: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "invalid_request".to_owned(),
+            message: format!("invalid request: {what}"),
+        }
+    }
 }
 
 impl From<PgError> for ApiError {

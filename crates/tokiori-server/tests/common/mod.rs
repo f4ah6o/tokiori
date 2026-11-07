@@ -75,6 +75,12 @@ async fn reap_stale_schemas(admin: &PgPool) {
     }
 }
 
+/// Whether this process already reaped schemas from earlier runs of itself.
+///
+/// Every test of this binary shares the pid prefix, so a reap after the first
+/// fixture could drop a schema another test of this same run is still using.
+static REAPED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 /// Returns `None` when `TOKIORI_TEST_DATABASE_URL` is not set, printing why.
 pub async fn fixture() -> Option<Fixture> {
     let Ok(url) = std::env::var("TOKIORI_TEST_DATABASE_URL") else {
@@ -99,7 +105,11 @@ pub async fn fixture() -> Option<Fixture> {
         .connect(&url)
         .await
         .expect("connect to test database");
-    reap_stale_schemas(&admin).await;
+    // Only the first fixture of this process reaps; the rest return early so
+    // a run never drops the schema a concurrent test of the same run holds.
+    if REAPED.set(()).is_ok() {
+        reap_stale_schemas(&admin).await;
+    }
     sqlx::query(AssertSqlSafe(format!(
         "DROP SCHEMA IF EXISTS {schema} CASCADE"
     )))

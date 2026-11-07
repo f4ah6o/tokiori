@@ -70,9 +70,9 @@ fn sample_command(ctx: &mut TestCaseContext, model: &Model) -> Command {
     }
 }
 
-async fn seed(fx: &common::Fixture) {
+async fn seed(fx: &common::Fixture, scope: &str) {
     fx.store
-        .apply_model(&fx.scope, &organization_model())
+        .apply_model(scope, &organization_model())
         .await
         .expect("apply model");
     for (entity_type, id) in [
@@ -82,7 +82,7 @@ async fn seed(fx: &common::Fixture) {
     ] {
         fx.store
             .create_entity(NewEntity {
-                scope: fx.scope.clone(),
+                scope: scope.to_owned(),
                 entity_type: entity_type.to_owned(),
                 id: id.to_owned(),
                 attributes: common::attributes(&[("name", id)]),
@@ -92,7 +92,7 @@ async fn seed(fx: &common::Fixture) {
     }
     fx.store
         .create_relation(NewRelation {
-            scope: fx.scope.clone(),
+            scope: scope.to_owned(),
             relation_type: "membership".to_owned(),
             id: "M001".to_owned(),
             roles: std::collections::BTreeMap::from([
@@ -106,7 +106,7 @@ async fn seed(fx: &common::Fixture) {
         .expect("membership");
     fx.store
         .set_role(SetRole {
-            scope: fx.scope.clone(),
+            scope: scope.to_owned(),
             relation_type: "membership".to_owned(),
             relation_id: "M001".to_owned(),
             role: "department".to_owned(),
@@ -117,10 +117,10 @@ async fn seed(fx: &common::Fixture) {
         .expect("baseline");
 }
 
-async fn department_on(fx: &common::Fixture, on: NaiveDate) -> String {
+async fn department_on(fx: &common::Fixture, scope: &str, on: NaiveDate) -> String {
     fx.store
         .read_role(ReadRole {
-            scope: fx.scope.clone(),
+            scope: scope.to_owned(),
             relation_type: "membership".to_owned(),
             relation_id: "M001".to_owned(),
             role: "department".to_owned(),
@@ -145,11 +145,18 @@ fn a_command_sequence_matches_the_reference_model() -> noprop::TestResult {
         .expect("runtime");
     let mut runner = noprop::Runner::new(seed_value);
 
-    for _ in 0..CASES {
-        let Some(fx) = runtime.block_on(fixture()) else {
-            return Ok(());
-        };
-        runtime.block_on(seed(&fx));
+    // One fixture for every case, with a fresh scope each time. Creating a
+    // fixture per case meant opening and closing two pools 150 times inside a
+    // runtime this test drives by hand; the pool occasionally read from a
+    // connection it had just closed ("unknown message type"). A scope is just
+    // a string, so a new one gives the same isolation without the churn.
+    let Some(fx) = runtime.block_on(fixture()) else {
+        return Ok(());
+    };
+
+    for case in 0..CASES {
+        let scope = format!("{}-pbt-{case}", fx.scope);
+        runtime.block_on(seed(&fx, &scope));
 
         // `Runner::run` takes an `Fn`, so the model and the trace live behind a
         // `RefCell`.
@@ -177,7 +184,7 @@ fn a_command_sequence_matches_the_reference_model() -> noprop::TestResult {
                     }
                 };
                 let request = Transfer {
-                    scope: fx.scope.clone(),
+                    scope: scope.clone(),
                     employee: "E001".to_owned(),
                     to_department: "D-PLANNING".to_owned(),
                     effective_on: effective,
@@ -205,7 +212,7 @@ fn a_command_sequence_matches_the_reference_model() -> noprop::TestResult {
                 }
 
                 for on in [day(2027, 6, 1), day(2027, 7, 10), day(2027, 9, 15)] {
-                    let actual = department_on(&fx, on).await;
+                    let actual = department_on(&fx, &scope, on).await;
                     let expected = model.borrow().department_on(on);
                     assert_eq!(actual, expected, "on {on} after {trace}");
                 }
@@ -213,8 +220,9 @@ fn a_command_sequence_matches_the_reference_model() -> noprop::TestResult {
             Ok(())
         });
 
-        runtime.block_on(fx.cleanup());
         outcome?;
     }
+
+    runtime.block_on(fx.cleanup());
     Ok(())
 }

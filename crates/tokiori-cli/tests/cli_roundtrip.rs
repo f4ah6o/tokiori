@@ -74,6 +74,52 @@ fn unique_scope() -> String {
     format!("cli-{}-{nanos}", std::process::id())
 }
 
+/// Creates a schema of this run's own and returns a URL that uses it.
+///
+/// The CLI tests used the shared `public` schema, so a run that overlapped
+/// another -- or followed a run that panicked before cleaning up -- saw rows
+/// it did not create. Each test now gets an empty schema of its own.
+fn fresh_schema(url: &str) -> (String, String) {
+    // A counter, not a clock: two tests starting in the same nanosecond would
+    // otherwise ask for the same schema name and one would lose the race.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let schema = format!("tokiori_cli_{}_{id}", std::process::id());
+    assert!(
+        schema
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+        "generated schema name must be a plain identifier: {schema}"
+    );
+
+    // The CLI has no command for DDL, so the schema is created here over the
+    // same connection string the tests then use.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let pool = sqlx::PgPool::connect(url)
+            .await
+            .expect("connect to create schema");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
+        .execute(&pool)
+        .await
+        .expect("drop stale schema");
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&pool)
+            .await
+            .expect("create schema");
+        pool.close().await;
+    });
+
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let scoped = format!("{url}{separator}options=-c%20search_path%3D{schema}");
+    (scoped, schema)
+}
+
 #[test]
 fn the_organization_scenario_round_trips_through_separate_processes() {
     let Ok(url) = std::env::var("TOKIORI_TEST_DATABASE_URL") else {
@@ -81,6 +127,7 @@ fn the_organization_scenario_round_trips_through_separate_processes() {
         return;
     };
     assert_binary_supports_commands();
+    let (url, _schema) = fresh_schema(&url);
     let scope = unique_scope();
     let model_json = example("model.json");
     let model_json = model_json.to_str().expect("utf-8 path");
@@ -182,6 +229,7 @@ fn a_rejected_relation_reports_a_stable_code_and_exits_non_zero() {
         eprintln!("SKIPPED: TOKIORI_TEST_DATABASE_URL is not set; no CLI evidence");
         return;
     };
+    let (url, _schema) = fresh_schema(&url);
     let scope = unique_scope();
     let model_json = example("model.json");
     let model_json = model_json.to_str().expect("utf-8 path");
@@ -366,6 +414,7 @@ fn a_correction_is_visible_through_the_cli_at_both_revisions() {
         eprintln!("SKIPPED: TOKIORI_TEST_DATABASE_URL is not set; no CLI evidence");
         return;
     };
+    let (url, _schema) = fresh_schema(&url);
     let (scope, moved, corrected) = seed_correction_history(&url);
 
     // The revision numbers are read from the commands rather than assumed:
