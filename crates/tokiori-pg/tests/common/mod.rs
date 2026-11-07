@@ -4,6 +4,10 @@
 //! rows, and the connection string comes from `TOKIORI_TEST_DATABASE_URL`.
 //! When the variable is unset the tests are skipped loudly instead of passing
 //! silently: a skipped acceptance test is not evidence.
+//!
+//! Each integration test compiles this module separately, so a helper used by
+//! one test file is dead code in the others.
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

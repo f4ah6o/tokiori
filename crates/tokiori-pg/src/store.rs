@@ -405,6 +405,16 @@ impl PgStore {
         Ok(participants)
     }
 
+    /// The next revision to assign in this store's scope.
+    pub async fn next_revision(&self, scope: &str) -> Result<u64, PgError> {
+        crate::revision::next_revision(&self.pool, scope).await
+    }
+
+    /// The newest revision assigned in a scope, if any.
+    pub async fn latest_revision(&self, scope: &str) -> Result<Option<u64>, PgError> {
+        crate::revision::latest_revision(&self.pool, scope).await
+    }
+
     /// Takes a row lock on the newest model so concurrent writers in one scope
     /// serialize on a stable definition.
     async fn lock_latest_model(
