@@ -262,3 +262,184 @@ fn an_invalid_model_file_is_rejected_before_any_database_access() {
             .contains("person")
     );
 }
+
+#[test]
+fn a_correction_is_visible_through_the_cli_at_both_revisions() {
+    let Ok(url) = std::env::var("TOKIORI_TEST_DATABASE_URL") else {
+        eprintln!("SKIPPED: TOKIORI_TEST_DATABASE_URL is not set; no CLI evidence");
+        return;
+    };
+    let scope = unique_scope();
+    let model = example("model.json");
+    let model = model.to_str().expect("utf-8 path");
+
+    json(&tokiori(&url, &scope, &["model", "apply", "--file", model]));
+    json(&tokiori(
+        &url,
+        &scope,
+        &["entity", "create", "--type", "employee", "--id", "E001"],
+    ));
+    json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "entity",
+            "create",
+            "--type",
+            "department",
+            "--id",
+            "D-SALES",
+        ],
+    ));
+    json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "entity",
+            "create",
+            "--type",
+            "department",
+            "--id",
+            "D-PLANNING",
+        ],
+    ));
+    json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "relation",
+            "create",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "employee=E001",
+            "--role",
+            "department=D-SALES",
+            "--valid-from",
+            "2027-04-01",
+        ],
+    ));
+
+    // r1: baseline, r2: move on 7/1, r3/r4: correct the move to 7/15.
+    json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "set",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--participant",
+            "D-SALES",
+            "--valid-from",
+            "2027-04-01",
+        ],
+    ));
+    let moved = json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "set",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--participant",
+            "D-PLANNING",
+            "--valid-from",
+            "2027-07-01",
+        ],
+    ));
+    assert_eq!(moved["revision"], 2);
+    json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "set",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--participant",
+            "D-SALES",
+            "--valid-from",
+            "2027-07-01",
+            "--valid-until",
+            "2027-07-15",
+        ],
+    ));
+    let corrected = json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "set",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--participant",
+            "D-PLANNING",
+            "--valid-from",
+            "2027-07-15",
+        ],
+    ));
+    assert_eq!(corrected["revision"], 4);
+
+    let before = json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "get",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--valid-at",
+            "2027-07-10",
+            "--known-revision",
+            "2",
+        ],
+    ));
+    let after = json(&tokiori(
+        &url,
+        &scope,
+        &[
+            "role",
+            "get",
+            "--type",
+            "membership",
+            "--id",
+            "M001",
+            "--role",
+            "department",
+            "--valid-at",
+            "2027-07-10",
+            "--known-revision",
+            "4",
+        ],
+    ));
+
+    assert_eq!(
+        before["participant"], "D-PLANNING",
+        "r2 believed the move was on 7/1"
+    );
+    assert_eq!(after["participant"], "D-SALES", "r4 knows it was on 7/15");
+}

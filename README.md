@@ -9,7 +9,7 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 - **Operational:** 異動などの業務操作と、その結果として生じる状態変更・イベントを監査可能に記録する。
 - **PostgreSQL-first:** 利用者に業務ごとの履歴テーブルを手作業で設計させない。
 
-## いまできること（P0）
+## いまできること（P0・P1）
 
 モデルを宣言し、社員・部署・所属を**現在値として**登録・取得できます。業務ごとの SQL テーブルを書く必要はありません。
 
@@ -39,6 +39,44 @@ tokiori --format json relation get --type membership --id M001
 | 別 scope の entity を参照する | `scope_mismatch` |
 | 同一 ID の二重登録 | `duplicate_id` |
 | 同一 version で異なる定義を apply | `model_version_conflict` |
+
+### 時点と、当時の認識（P1）
+
+履歴は上書きされません。変更は新しい revision として記録され、古い revision は
+その時点で知っていた内容を返し続けます。
+
+所属の部署は**ロール**なので `role` で記録します（`attribute` は名前などの属性用）。
+
+```sh
+# 起点: 4/1 から営業部（r1）
+tokiori role set --type membership --id M001 --role department \
+  --participant D-SALES --valid-from 2027-04-01
+
+# r2: 7/1 付の異動を記録
+tokiori role set --type membership --id M001 --role department \
+  --participant D-PLANNING --valid-from 2027-07-01
+
+# r3/r4: 発効日を 7/15 に遡及訂正する。訂正は空いた期間も述べる必要がある
+tokiori role set --type membership --id M001 --role department \
+  --participant D-SALES --valid-from 2027-07-01 --valid-until 2027-07-15
+tokiori role set --type membership --id M001 --role department \
+  --participant D-PLANNING --valid-from 2027-07-15
+
+# 7/10 の所属を、訂正前（r2）と訂正後（r4）で照会する
+tokiori role get --type membership --id M001 --role department \
+  --valid-at 2027-07-10 --known-revision 2   # D-PLANNING
+tokiori role get --type membership --id M001 --role department \
+  --valid-at 2027-07-10 --known-revision 4   # D-SALES
+```
+
+> 訂正が空いた期間を述べるのは利用者の責任です。r3 で「7/1〜7/14 は営業部だった」と
+> 記録しない限り、その期間は r2 の認識（企画部）のままになります。
+
+`--known-revision` を省略すると最新の revision で答えます。存在しない revision は
+`unknown_revision` で拒否され、`not found` とは区別されます。
+
+P0 の現在値は `tokiori cutover --at <DATE>` で最初の revision として取り込めます。
+取り込み前の日付は「知らない」であって「存在しなかった」ではありません。
 
 詳しい手順は [examples/organization/README.md](examples/organization/README.md)。
 
@@ -98,10 +136,11 @@ P0 宣言的モデル / 汎用 CRUD・最小 CLI → P1 Bitemporal Engine → P2
 
 ## Status
 
-**P0 実装済み。P1 以降は未実装。**
+**P0・P1 実装済み。P2 以降は未実装。**
 
-- 実装済み: モデル宣言・検証・冪等な適用、entity / relation の登録・取得、最小 CLI、noprop PBT、parser fuzz、PostgreSQL 18 での `ORG-001` / `ORG-002`。
-- 未実装: 時点照会（`ORG-003` / `ORG-004`）、異動操作（`ORG-005`）、横断クエリ（`ORG-006`）、API / SDK / UI（`ORG-007`）、YAML の正式サポート、Verus 証明。
-- 実行した検証と未実行の検証は [docs/testing/p0-evidence.md](docs/testing/p0-evidence.md) に記録しています。
+- 実装済み（P0）: モデル宣言・検証・冪等な適用、entity / relation の登録・取得、最小 CLI、noprop PBT、parser fuzz、PostgreSQL 18 での `ORG-001` / `ORG-002`。
+- 実装済み（P1）: 有効時刻と記録 revision の二時点履歴、遡及訂正、将来発令、tombstone、P0 からの cutover、`ORG-003` / `ORG-004`。
+- 未実装: 異動操作（`ORG-005`）、横断クエリ（`ORG-006`）、API / SDK / UI（`ORG-007`）、`known_at`、Verus 証明。
+- 実行した検証と未実行の検証は [docs/testing/p0-evidence.md](docs/testing/p0-evidence.md) と [docs/testing/p1-evidence.md](docs/testing/p1-evidence.md) に記録しています。
 
 設計判断は [docs/adr/](docs/adr/) にあります。
