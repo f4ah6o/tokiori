@@ -65,15 +65,18 @@ CREATE TABLE relation_role_versions (
     scope_id                TEXT   NOT NULL,
     relation_type           TEXT   NOT NULL,
     relation_id             TEXT   NOT NULL,
-    recorded_from           BIGINT NOT NULL,
-    valid_from              DATE   NOT NULL,
     role                    TEXT   NOT NULL,
+    valid_from              DATE   NOT NULL,
+    valid_until             DATE,
+    recorded_from           BIGINT NOT NULL CHECK (recorded_from >= 1),
+    recorded_to             BIGINT,
     participant_entity_type TEXT   NOT NULL,
     participant_id          TEXT   NOT NULL,
-    PRIMARY KEY (scope_id, relation_type, relation_id, recorded_from, valid_from, role),
-    FOREIGN KEY (scope_id, relation_type, relation_id, recorded_from, valid_from)
-        REFERENCES relation_versions (scope_id, relation_type, relation_id, recorded_from, valid_from)
-        ON DELETE CASCADE
+    PRIMARY KEY (scope_id, relation_type, relation_id, role, recorded_from, valid_from),
+    CONSTRAINT relation_role_versions_valid_interval
+        CHECK (valid_until IS NULL OR valid_until > valid_from),
+    CONSTRAINT relation_role_versions_recorded_interval
+        CHECK (recorded_to IS NULL OR recorded_to > recorded_from)
 );
 
 CREATE INDEX relation_role_versions_by_participant

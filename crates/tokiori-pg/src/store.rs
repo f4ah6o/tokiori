@@ -548,36 +548,54 @@ pub(crate) async fn load_declared_attribute(
     entity_id: &str,
     attribute: &str,
 ) -> Result<AttributeType, PgError> {
-    let exists: Option<String> = sqlx::query_scalar(
-        "SELECT id FROM entities WHERE scope_id = $1 AND entity_type = $2 AND id = $3",
-    )
-    .bind(scope)
-    .bind(entity_type)
-    .bind(entity_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if exists.is_none() {
-        return Err(PgError::ScopeMismatch {
-            scope: scope.to_owned(),
-            entity_type: entity_type.to_owned(),
-            id: entity_id.to_owned(),
-        });
-    }
-
     let model = PgStore::load_latest_model(tx, scope).await?;
-    let Some(entity) = model.entities.get(entity_type) else {
+
+    // The owner may be an entity or a relation instance; both carry declared
+    // attributes and both can have a history.
+    let declared = if let Some(entity) = model.entities.get(entity_type) {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM entities WHERE scope_id = $1 AND entity_type = $2 AND id = $3",
+        )
+        .bind(scope)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if exists.is_none() {
+            return Err(PgError::ScopeMismatch {
+                scope: scope.to_owned(),
+                entity_type: entity_type.to_owned(),
+                id: entity_id.to_owned(),
+            });
+        }
+        entity.attributes.get(attribute).copied()
+    } else if let Some(relation) = model.relations.get(entity_type) {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM relations WHERE scope_id = $1 AND relation_type = $2 AND id = $3",
+        )
+        .bind(scope)
+        .bind(entity_type)
+        .bind(entity_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if exists.is_none() {
+            return Err(PgError::ScopeMismatch {
+                scope: scope.to_owned(),
+                entity_type: entity_type.to_owned(),
+                id: entity_id.to_owned(),
+            });
+        }
+        relation.attributes.get(attribute).copied()
+    } else {
         return Err(PgError::EntityTypeNotFound {
             entity_type: entity_type.to_owned(),
         });
     };
-    entity
-        .attributes
-        .get(attribute)
-        .copied()
-        .ok_or_else(|| PgError::UnknownAttribute {
-            owner: entity_type.to_owned(),
-            attribute: attribute.to_owned(),
-        })
+
+    declared.ok_or_else(|| PgError::UnknownAttribute {
+        owner: entity_type.to_owned(),
+        attribute: attribute.to_owned(),
+    })
 }
 
 fn check_attributes(

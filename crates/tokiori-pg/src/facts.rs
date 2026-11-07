@@ -12,7 +12,7 @@ use crate::error::PgError;
 use crate::store::{PgStore, check_attribute_value, load_declared_attribute};
 
 /// A stored version row: valid interval, recorded interval, and value.
-type StoredVersion = (NaiveDate, Option<NaiveDate>, i64, Option<i64>, Value);
+pub(crate) type StoredVersion = (NaiveDate, Option<NaiveDate>, i64, Option<i64>, Value);
 
 /// A request to record a value for one attribute.
 #[derive(Debug, Clone)]
