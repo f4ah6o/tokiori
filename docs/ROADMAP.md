@@ -1,6 +1,6 @@
 # Tokiori: P0–P4 実装ロードマップ
 
-- 状態: **P0・P1 実装済み / P2 以降は計画**。P0 は [docs/testing/p0-evidence.md](testing/p0-evidence.md)、P1 は [docs/testing/p1-evidence.md](testing/p1-evidence.md) の実行ログで確認できる。P2 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
+- 状態: **P0–P2 実装済み / P3 以降は計画**。P0 は [docs/testing/p0-evidence.md](testing/p0-evidence.md)、P1 は [docs/testing/p1-evidence.md](testing/p1-evidence.md)、P2 は [docs/testing/p2-evidence.md](testing/p2-evidence.md) の実行ログで確認できる。P3 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
 - 対象: PostgreSQL を永続化先とする汎用 Temporal + Relationship データモデリングエンジン
 - 方針: TDD を実装の基本サイクルにし、sile/noprop による PBT と cargo-fuzz による fuzzing を P0 から継続する。
 - PDD: [Proof-Driven Development 導入方針](PDD.md) に沿い、承認済み intent・形式仕様・信頼境界・検証証拠の対応を明示する。**研究プロトタイプの Verus 証明は段階的な導入候補であり、未実装。**
@@ -265,13 +265,15 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 **目的:** 状態の変化と、業務上何を実行したかを対応づける。
 
 **実装**
-- [ ] 操作スキーマ (名前、入力、事前条件、効果、理由、actor)
-- [ ] Transfer 等の命令を relation の変更へコンパイルする
-- [ ] operation_id / request_id / idempotency_key と実行結果の台帳。冪等性キーはスコープ・操作型で名前空間を切り、**同一キー/異なる入力は conflict** にする
-- [ ] operation と状態変更と outbox 追加の単一コミット
-- [ ] 取消を「過去の消去」ではなく補償操作として表現する
-- [ ] リトライ、重複到着、競合、途中失敗の規約
-- [ ] outbox の再送・順不同・重複を前提にした購読者契約 (event_id、scope/revision、ack 前 crash の再送、購読側 deduplication)
+- [x] 操作スキーマ (名前、入力、事前条件、効果、理由、actor)
+- [x] Transfer 等の命令を relation の変更へコンパイルする
+- [x] operation_id / request_id / idempotency_key と実行結果の台帳。冪等性キーはスコープ・操作型で名前空間を切り、**同一キー/異なる入力は conflict** にする
+- [x] operation と状態変更と outbox 追加の単一コミット
+- [x] 取消を「過去の消去」ではなく補償操作として表現する
+- [x] リトライ、重複到着、競合、途中失敗の規約
+- [x] outbox の再送・順不同・重複を前提にした購読者契約 (event_id、scope/revision、ack 前 crash の再送、購読側 deduplication)
+
+実行した検証は [docs/testing/p2-evidence.md](testing/p2-evidence.md)、判断は [ADR 0006](adr/0006-p2-operations.md)。
 
 **Red → Green の代表テスト (What)**
 - 同一 Transfer request が 2 回届いても異動は 1 回で、同じ結果を返す

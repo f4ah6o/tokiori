@@ -9,7 +9,7 @@ Tokiori は PostgreSQL 上で、業務上の **Entity / Relation / Role / Operat
 - **Operational:** 異動などの業務操作と、その結果として生じる状態変更・イベントを監査可能に記録する。
 - **PostgreSQL-first:** 利用者に業務ごとの履歴テーブルを手作業で設計させない。
 
-## いまできること（P0・P1）
+## いまできること（P0・P1・P2）
 
 モデルを宣言し、社員・部署・所属を**現在値として**登録・取得できます。業務ごとの SQL テーブルを書く必要はありません。
 
@@ -78,6 +78,33 @@ tokiori role get --type membership --id M001 --role department \
 P0 の現在値は `tokiori cutover --at <DATE>` で最初の revision として取り込めます。
 取り込み前の日付は「知らない」であって「存在しなかった」ではありません。
 
+### 業務操作としての異動（P2）
+
+異動は「状態を書き換える」のではなく「何を実行したか」として記録されます。
+同じ `--request-id` を再送しても一度しか適用されず、同じキーで違う内容を送ると
+`idempotency_conflict` になります。
+
+```sh
+tokiori operation transfer --employee E001 --to-department D-PLANNING \
+  --effective-on 2027-07-01 --request-id req-1 --reason 'annual rotation' --actor alice
+
+# 同じリクエストの再送: applied=true ではなく replayed になり、revision も同じ
+tokiori operation transfer --employee E001 --to-department D-PLANNING \
+  --effective-on 2027-07-01 --request-id req-1 --reason 'annual rotation' --actor alice
+
+# 取消は過去を消さず、元に戻す新しい版を記録する
+tokiori operation cancel --transfer-request-id req-1 --cancel-request-id cancel-1 \
+  --reason 'mistaken transfer' --actor bob
+```
+
+状態変更・操作の台帳・outbox イベントは**同一コミット**で書かれます。途中で失敗すれば
+3 つとも残りません。イベント配信は at-least-once で、購読側は `event_id` で重複排除します。
+
+```sh
+tokiori --format json outbox claim --limit 100
+tokiori outbox ack --event-id <uuid>
+```
+
 詳しい手順は [examples/organization/README.md](examples/organization/README.md)。
 
 ## 想定する利用の流れ
@@ -136,11 +163,12 @@ P0 宣言的モデル / 汎用 CRUD・最小 CLI → P1 Bitemporal Engine → P2
 
 ## Status
 
-**P0・P1 実装済み。P2 以降は未実装。**
+**P0–P2 実装済み。P3 以降は未実装。**
 
 - 実装済み（P0）: モデル宣言・検証・冪等な適用、entity / relation の登録・取得、最小 CLI、noprop PBT、parser fuzz、PostgreSQL 18 での `ORG-001` / `ORG-002`。
 - 実装済み（P1）: 有効時刻と記録 revision の二時点履歴、遡及訂正、将来発令、tombstone、P0 からの cutover、`ORG-003` / `ORG-004`。
-- 未実装: 異動操作（`ORG-005`）、横断クエリ（`ORG-006`）、API / SDK / UI（`ORG-007`）、`known_at`、Verus 証明。
+- 実装済み（P2）: 異動・取消の操作、冪等な再送と conflict、単一コミットの outbox、at-least-once 配信、`ORG-005`。
+- 未実装: 横断クエリ（`ORG-006`）、API / SDK / UI（`ORG-007`）、`known_at`、exactly-once 配信、Verus 証明。
 - 実行した検証と未実行の検証は [docs/testing/p0-evidence.md](docs/testing/p0-evidence.md) と [docs/testing/p1-evidence.md](docs/testing/p1-evidence.md) に記録しています。
 
 設計判断は [docs/adr/](docs/adr/) にあります。

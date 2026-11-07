@@ -6,8 +6,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{Map, Value, json};
 use tokiori_model::{Model, ValidTime, canonical_json, parse_model_str};
 use tokiori_pg::{
-    ApplyOutcome, Cutover, EntityRow, NewEntity, NewRelation, PgError, PgStore, ReadAttribute,
-    ReadRole, RelationRow, SetAttribute, SetRole,
+    ApplyOutcome, CancelTransfer, Cutover, EntityRow, NewEntity, NewRelation, PgError, PgStore,
+    ReadAttribute, ReadRole, RelationRow, SetAttribute, SetRole, Transfer,
 };
 
 #[derive(Debug, Parser)]
@@ -63,6 +63,16 @@ enum Command {
         #[command(subcommand)]
         action: RoleAction,
     },
+    /// Run a business operation such as a transfer.
+    Operation {
+        #[command(subcommand)]
+        action: OperationAction,
+    },
+    /// Deliver events written with operations.
+    Outbox {
+        #[command(subcommand)]
+        action: OutboxAction,
+    },
     /// Import P0's current state as the first revision.
     Cutover {
         /// The date after which imported facts are asserted.
@@ -71,6 +81,58 @@ enum Command {
     },
 }
 
+#[derive(Debug, Args)]
+struct TransferArgs {
+    #[arg(long)]
+    employee: String,
+    #[arg(long)]
+    to_department: String,
+    #[arg(long)]
+    effective_on: NaiveDate,
+    /// The caller's request id; replaying it is a no-op.
+    #[arg(long)]
+    request_id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    actor: String,
+}
+
+#[derive(Debug, Args)]
+struct CancelArgs {
+    /// The request id of the transfer to undo.
+    #[arg(long)]
+    transfer_request_id: String,
+    /// The caller's request id for the cancellation.
+    #[arg(long)]
+    cancel_request_id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    actor: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum OperationAction {
+    /// Move an employee to another department.
+    Transfer(TransferArgs),
+    /// Undo a transfer by compensating for it.
+    Cancel(CancelArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum OutboxAction {
+    /// Claim pending events for delivery.
+    Claim {
+        #[arg(long, default_value_t = 100)]
+        limit: i64,
+    },
+    /// Acknowledge events a consumer has processed.
+    Ack {
+        #[arg(long = "event-id", required = true)]
+        event_ids: Vec<String>,
+    },
+}
 #[derive(Debug, Subcommand)]
 enum RoleAction {
     /// Record a participant, closing the version it replaces.
@@ -254,6 +316,8 @@ pub async fn run() -> Result<(), Failure> {
         format,
     };
 
+    // The commands split into two groups so each dispatch stays readable:
+    // the P0 surface, and the temporal and operational surface added later.
     match command {
         Command::Model { action } => match action {
             ModelAction::Validate { file } => validate(ctx, &file),
@@ -277,6 +341,13 @@ pub async fn run() -> Result<(), Failure> {
                 relation_get(ctx, &relation_type, &id).await
             }
         },
+        other => run_temporal(ctx, other).await,
+    }
+}
+
+/// Dispatches the commands introduced after P0.
+async fn run_temporal(ctx: Context<'_>, command: Command) -> Result<(), Failure> {
+    match command {
         Command::Attribute { action } => match action {
             AttributeAction::Set {
                 owner_type,
@@ -333,7 +404,19 @@ pub async fn run() -> Result<(), Failure> {
                 known_revision,
             } => role_get(ctx, relation_type, id, role, valid_at, known_revision).await,
         },
+        Command::Operation { action } => match action {
+            OperationAction::Transfer(args) => operation_transfer(ctx, args).await,
+            OperationAction::Cancel(args) => operation_cancel(ctx, args).await,
+        },
+        Command::Outbox { action } => match action {
+            OutboxAction::Claim { limit } => outbox_claim(ctx, limit).await,
+            OutboxAction::Ack { event_ids } => outbox_ack(ctx, &event_ids).await,
+        },
         Command::Cutover { at } => cutover(ctx, at).await,
+        // Handled by the caller.
+        Command::Model { .. } | Command::Entity { .. } | Command::Relation { .. } => {
+            unreachable!("P0 commands are dispatched by `run`")
+        }
     }
 }
 
@@ -579,6 +662,111 @@ async fn role_get(
             None => "(no participant)".to_owned(),
         },
     );
+    Ok(())
+}
+
+async fn operation_transfer(ctx: Context<'_>, args: TransferArgs) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let outcome = store
+        .transfer(Transfer {
+            scope: ctx.scope.to_owned(),
+            employee: args.employee,
+            to_department: args.to_department,
+            effective_on: args.effective_on,
+            request_id: args.request_id,
+            reason: args.reason,
+            actor: args.actor,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({
+            "revision": outcome.revision,
+            "applied": outcome.applied,
+            "result": outcome.result,
+        }),
+        || {
+            format!(
+                "transfer {} at revision {}",
+                if outcome.applied {
+                    "applied"
+                } else {
+                    "replayed"
+                },
+                outcome.revision
+            )
+        },
+    );
+    Ok(())
+}
+
+async fn operation_cancel(ctx: Context<'_>, args: CancelArgs) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let outcome = store
+        .cancel_transfer(CancelTransfer {
+            scope: ctx.scope.to_owned(),
+            transfer_request_id: args.transfer_request_id,
+            cancel_request_id: args.cancel_request_id,
+            reason: args.reason,
+            actor: args.actor,
+        })
+        .await?;
+    emit(
+        ctx.format,
+        &json!({
+            "revision": outcome.revision,
+            "applied": outcome.applied,
+            "result": outcome.result,
+        }),
+        || {
+            format!(
+                "cancel {} at revision {}",
+                if outcome.applied {
+                    "applied"
+                } else {
+                    "replayed"
+                },
+                outcome.revision
+            )
+        },
+    );
+    Ok(())
+}
+
+async fn outbox_claim(ctx: Context<'_>, limit: i64) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let events = store.claim_outbox(ctx.scope, limit).await?;
+    let payload: Vec<Value> = events
+        .iter()
+        .map(|event| {
+            json!({
+                "event_id": event.event_id,
+                "revision": event.revision,
+                "event_type": event.event_type,
+                "payload": event.payload,
+            })
+        })
+        .collect();
+    let count = payload.len();
+    emit(ctx.format, &Value::Array(payload), || {
+        format!("{count} event(s) claimed")
+    });
+    Ok(())
+}
+
+async fn outbox_ack(ctx: Context<'_>, event_ids: &[String]) -> Result<(), Failure> {
+    let store = open(ctx.database_url).await?;
+    let mut ids = Vec::with_capacity(event_ids.len());
+    for text in event_ids {
+        let id = text
+            .parse()
+            .map_err(|_| Failure::new("invalid_event_id", format!("{text:?} is not a UUID")))?;
+        ids.push(id);
+    }
+    let acknowledged = store.ack_outbox(&ids).await?;
+    emit(ctx.format, &json!({ "acknowledged": acknowledged }), || {
+        format!("{acknowledged} event(s) acknowledged")
+    });
     Ok(())
 }
 
