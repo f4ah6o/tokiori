@@ -97,11 +97,16 @@ jobs:
         if: env.ACTRUN_LOCAL != 'true'
       # `taiki-e/install-action@cargo-fuzz` is not a tool tag: it resolves to
       # the action but installs nothing, leaving `cargo fuzz` missing. Pin the
-      # tool explicitly so the gate actually runs.
+      # action and name the tool explicitly so the gate actually runs.
       - uses: taiki-e/install-action@v2
         if: env.ACTRUN_LOCAL != 'true'
         with:
           tool: cargo-fuzz
+      # The repository pins `stable` for the product crates; the fuzz workspace
+      # needs nightly, so select it explicitly for this directory.
+      - name: Use nightly for the fuzz workspace
+        if: env.ACTRUN_LOCAL != 'true'
+        run: rustup override set nightly
       - name: Fuzz the model parser
         if: env.ACTRUN_LOCAL != 'true'
         working-directory: fuzz
