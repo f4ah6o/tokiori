@@ -5,6 +5,7 @@
 //! leaves a partially written relation behind.
 
 mod cancel;
+mod compiler;
 mod cutover;
 mod error;
 mod facts;
@@ -16,6 +17,7 @@ mod store;
 mod transfer;
 
 pub use cancel::CancelTransfer;
+pub use compiler::{CompiledQuery, compile_query};
 pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};
 pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
