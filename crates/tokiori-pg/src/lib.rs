@@ -10,7 +10,7 @@ mod revision;
 mod store;
 
 pub use error::{ApplyOutcome, PgError};
-pub use facts::SetAttribute;
+pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
 pub use revision::{latest_revision, next_revision};
 pub use store::{
     EntityRow, NewEntity, NewRelation, PgStore, RelationRow, connect, migrate, migrate_with,

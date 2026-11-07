@@ -64,6 +64,12 @@ pub enum PgError {
         entity_id: String,
         attribute: String,
     },
+    #[error("revision {revision} was never assigned in scope {scope:?} (latest is {latest:?})")]
+    UnknownRevision {
+        scope: String,
+        revision: u64,
+        latest: Option<u64>,
+    },
     #[error("valid interval starting {from} and ending {until} is empty")]
     EmptyInterval { from: String, until: String },
     #[error("database error: {0}")]
@@ -90,6 +96,7 @@ impl PgError {
             Self::UnknownAttribute { .. } => "unknown_attribute",
             Self::InvalidAttribute { .. } => "invalid_attribute",
             Self::NothingToEnd { .. } => "nothing_to_end",
+            Self::UnknownRevision { .. } => "unknown_revision",
             Self::EmptyInterval { .. } => "empty_interval",
             Self::Db(_) => "database_error",
             Self::Migrate(_) => "migration_error",
