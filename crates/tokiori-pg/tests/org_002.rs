@@ -37,6 +37,8 @@ async fn applying_the_same_model_twice_changes_nothing() {
         .await
         .expect("count models");
     assert_eq!(versions, 1);
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -66,6 +68,8 @@ async fn a_different_definition_under_the_same_version_is_rejected_and_leaves_no
 
     let stored = fx.store.latest_model(&fx.scope).await.expect("load model");
     assert_eq!(canonical_json(&stored), canonical_json(&original));
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -136,4 +140,6 @@ async fn a_restarted_process_reads_back_the_same_ids_attributes_and_relations() 
 
     let reloaded = restarted.latest_model(&scope).await.expect("load model");
     assert_eq!(canonical_json(&reloaded), canonical_json(&model));
+
+    fx.cleanup().await;
 }

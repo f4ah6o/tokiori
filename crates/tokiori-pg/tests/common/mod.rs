@@ -30,9 +30,15 @@ pub fn organization_model() -> Model {
 }
 
 /// A store bound to a fresh, empty schema.
+///
+/// Call [`Fixture::cleanup`] at the end of every test. `Drop` cannot do it:
+/// dropping a schema is async, and a panic inside the test must not also panic
+/// the cleanup.
 pub struct Fixture {
     pub store: PgStore,
     pub scope: String,
+    schema: String,
+    admin: PgPool,
 }
 
 /// Returns `None` when `TOKIORI_TEST_DATABASE_URL` is not set, printing why.
@@ -69,8 +75,6 @@ pub async fn fixture() -> Option<Fixture> {
         .execute(&admin)
         .await
         .expect("create schema");
-    admin.close().await;
-
     let separator = if url.contains('?') { '&' } else { '?' };
     let scoped_url = format!("{url}{separator}options=-c%20search_path%3D{schema}");
     let pool: PgPool = PgPoolOptions::new()
@@ -83,7 +87,27 @@ pub async fn fixture() -> Option<Fixture> {
     Some(Fixture {
         store: PgStore::new(pool),
         scope,
+        schema,
+        admin,
     })
+}
+
+impl Fixture {
+    /// Drops the test schema and closes both pools.
+    ///
+    /// Without this every run leaves a schema behind, and a shared database
+    /// accumulates them until it is unusable.
+    pub async fn cleanup(self) {
+        self.store.pool().close().await;
+        sqlx::query(AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {} CASCADE",
+            self.schema
+        )))
+        .execute(&self.admin)
+        .await
+        .expect("drop test schema");
+        self.admin.close().await;
+    }
 }
 
 pub fn attributes(pairs: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {

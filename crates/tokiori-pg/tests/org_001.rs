@@ -89,6 +89,8 @@ async fn a_well_formed_membership_round_trips_through_postgres() {
         .expect("read employee")
         .expect("employee exists");
     assert_eq!(entity.attributes["name"], serde_json::json!("Alice"));
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -116,6 +118,8 @@ async fn assigning_a_department_to_the_employee_role_is_rejected_without_a_parti
             .expect("read")
             .is_none()
     );
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -160,6 +164,8 @@ async fn referencing_an_entity_from_another_scope_is_rejected() {
         .expect_err("a cross-scope participant must be rejected");
     assert_eq!(err.code(), "scope_mismatch", "{err}");
     assert_eq!(relation_count(&fx.store).await, 0);
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -177,6 +183,8 @@ async fn a_relation_without_a_required_role_is_rejected() {
         .expect_err("missing role must be rejected");
     assert_eq!(err.code(), "missing_role", "{err}");
     assert_eq!(relation_count(&fx.store).await, 0);
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -194,6 +202,8 @@ async fn an_undeclared_role_name_is_rejected() {
         .expect_err("undeclared role must be rejected");
     assert_eq!(err.code(), "unknown_role", "{err}");
     assert_eq!(relation_count(&fx.store).await, 0);
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -220,6 +230,8 @@ async fn registering_the_same_entity_id_twice_leaves_the_original_intact() {
         .expect("read")
         .expect("exists");
     assert_eq!(stored.attributes["name"], serde_json::json!("Alice"));
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -241,6 +253,8 @@ async fn an_undeclared_attribute_is_rejected() {
         .await
         .expect_err("undeclared attribute must be rejected");
     assert_eq!(err.code(), "unknown_attribute", "{err}");
+
+    fx.cleanup().await;
 }
 
 #[tokio::test]
@@ -258,4 +272,6 @@ async fn writing_before_a_model_is_applied_is_rejected() {
         .await
         .expect_err("no model means no writes");
     assert_eq!(err.code(), "model_not_found", "{err}");
+
+    fx.cleanup().await;
 }
