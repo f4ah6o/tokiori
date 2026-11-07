@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-clippy-test:
+    name: fmt / clippy / unit + property tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit and property tests
+        env:
+          TOKIORI_PROPTEST_SEED: '20261107'
+        run: cargo test --workspace --all-targets
+
+  postgres-e2e:
+    name: PostgreSQL 18 acceptance (ORG-001, ORG-002)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # On GitHub the service is published on the runner's loopback address.
+      TOKIORI_TEST_DATABASE_URL: postgres://tokiori:tokiori@localhost:55432/tokiori
+      TOKIORI_PROPTEST_SEED: '20261107'
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: tokiori
+          POSTGRES_PASSWORD: tokiori
+          POSTGRES_DB: tokiori
+        # Port mappings must be strings, not YAML integers.
+        ports:
+          - "55432:5432"
+        # Keep this on one line: a folded scalar (">-") is valid YAML but
+        # actrun's parser rejects it, which hides the rest of the job.
+        # `pg_isready` takes no `-U`: actrun splits options on whitespace, so a
+        # quoted argument would reach docker as a flag. The service env already
+        # tells it which user to check, and a 3s interval fits actrun's wait.
+        options: --health-cmd "pg_isready" --health-interval 3s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Point acceptance tests at the local service
+        # actrun does not export SERVICE_HOST/SERVICE_PORT, but a published
+        # port is reachable on loopback from the job.
+        if: env.ACTRUN_LOCAL == 'true'
+        run: |
+          echo "TOKIORI_TEST_DATABASE_URL=postgres://tokiori:tokiori@127.0.0.1:55432/tokiori" >> "$GITHUB_ENV"
+      - name: Acceptance tests
+        run: |
+          cargo test -p tokiori-pg -p tokiori-cli -- --nocapture 2>&1 | tee e2e.log
+          if grep -q 'SKIPPED:' e2e.log; then
+            echo '::error::an acceptance test skipped; TOKIORI_TEST_DATABASE_URL must be set'
+            exit 1
+          fi
+
+  fuzz-smoke:
+    name: fuzz smoke (parser)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Advisory while the corpus is young; promote to required once stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # actrun cannot install the nightly toolchain or cargo-fuzz, so the fuzz
+      # steps are skipped locally instead of failing. The guard lives on the
+      # steps because `jobs.<job_id>.if` cannot read the `env` context.
+      - uses: dtolnay/rust-toolchain@nightly
+        if: env.ACTRUN_LOCAL != 'true'
+      # `taiki-e/install-action@cargo-fuzz` is not a tool tag: it resolves to
+      # the action but installs nothing, leaving `cargo fuzz` missing. Pin the
+      # action and name the tool explicitly so the gate actually runs.
+      - uses: taiki-e/install-action@v2
+        if: env.ACTRUN_LOCAL != 'true'
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz the model parser
+        if: env.ACTRUN_LOCAL != 'true'
+        working-directory: fuzz
+        env:
+          # AddressSanitizer cannot link a statically linked libc, and the
+          # nightly toolchain's default host target is musl. Name the GNU
+          # target explicitly so the sanitizer has a dynamic libc.
+          CARGO_TARGET: x86_64-unknown-linux-gnu
+        run: cargo fuzz run --target "$CARGO_TARGET" fuzz_model_input -- -runs=20000 -max_total_time=120
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

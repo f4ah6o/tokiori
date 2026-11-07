@@ -1,0 +1,4 @@
+# cargo-fuzz needs nightly (sanitizer flags are unstable). This file only
+# applies inside the fuzz workspace; the product crates stay on stable.
+[toolchain]
+channel = "nightly"

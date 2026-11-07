@@ -1,0 +1,21 @@
+[package]
+name = "tokiori-pg"
+description = "PostgreSQL persistence for Tokiori models, entities, and relations"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokiori-model.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 # Tokiori: P0–P4 実装ロードマップ
 
-- 状態: **計画 (未実装)**。本書のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
+- 状態: **P0 実装済み / P1 以降は計画**。P0 の項目は [docs/testing/p0-evidence.md](testing/p0-evidence.md) の実行ログで確認できる。P1 以降のコマンド、API、パス、テスト名は実装予定の契約であり、現在動作することを意味しない。
 - 対象: PostgreSQL を永続化先とする汎用 Temporal + Relationship データモデリングエンジン
 - 方針: TDD を実装の基本サイクルにし、sile/noprop による PBT と cargo-fuzz による fuzzing を P0 から継続する。
 - PDD: [Proof-Driven Development 導入方針](PDD.md) に沿い、承認済み intent・形式仕様・信頼境界・検証証拠の対応を明示する。**研究プロトタイプの Verus 証明は段階的な導入候補であり、未実装。**
@@ -207,14 +207,16 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 **目的:** 利用者が社員・部署・所属関係を手動 SQL テーブル定義なしで作れる。
 
 **実装**
-- [ ] Cargo workspace、フォーマット/lint、ライセンス、CI、PostgreSQL 18 テストコンテナ
-- [ ] entity / relation / role / attribute / cardinality / constraint を表す versioned モデル AST
-- [ ] YAML/JSON パーサー、正規化、型チェック、互換性エラー
-- [ ] PostgreSQL 初期マイグレーション、安定 ID、`scope_id`・`model_version` を含む汎用エンティティ/関係永続化
-- [ ] モデル適用の繰返し・中断・不整合の扱い (同一モデルは冪等、非互換は明示拒否)
-- [ ] P1 初期履歴への移行を妨げない ID・モデルバージョン・保存契約を ADR で固定
-- [ ] model validate / apply、entity create/get、relation create/get の CLI (最低限)
-- [ ] 組織サンプルと手順を fixture として追加
+- [x] Cargo workspace、フォーマット/lint、CI、PostgreSQL 18 テストコンテナ（ライセンスは未決定）
+- [x] entity / relation / role / attribute / cardinality を表す versioned モデル AST（`constraint` は P1）
+- [x] YAML/JSON パーサー、正規化、型チェック、互換性エラー
+- [x] PostgreSQL 初期マイグレーション、安定 ID、`scope_id`・`model_version` を含む汎用エンティティ/関係永続化
+- [x] モデル適用の繰返し・不整合の扱い (同一モデルは冪等、非互換は明示拒否)。中断からの再開は DB のトランザクションに委ねる
+- [x] P1 初期履歴への移行を妨げない ID・モデルバージョン・保存契約を [ADR 0001](adr/0001-model-ast-and-storage-separation.md) / [ADR 0002](adr/0002-p0-to-p1-cutover.md) で固定
+- [x] model validate / apply、entity create/get、relation create/get の CLI (最低限)
+- [x] 組織サンプルと手順を fixture として追加（[examples/organization](../examples/organization/)）
+
+実行した検証は [docs/testing/p0-evidence.md](testing/p0-evidence.md) に記録している。
 
 **Red → Green の代表テスト (What)**
 - 未定義 Department role がモデル適用前に拒否される
@@ -351,7 +353,7 @@ YAML は人間向け入力、正規化された AST/JSON は安定した内部�
 - 仕様変更に伴う fixture の更新は期待値の根拠をレビューする。スナップショットを盲目的に更新しない。
 - テストの重みは unit → property → DB integration → E2E → fault injection の順に増やすが、各段階のゲートは省略しない。
 - PBT と fuzz は役割が違う。PBT は業務不変条件と状態モデルの差分、fuzz は構文や想定外の入力列など探索面を広げる。互いに代替しない。
-- コード未作成の現段階では、上のコマンドは **すべて未実行**。
+- P0 の時点で実行済みのコマンドと結果は [docs/testing/p0-evidence.md](testing/p0-evidence.md) にある。CI ジョブは追加済みだが初回実行はまだ記録していない。P1 以降のコマンドは **未実行**。
 
 ### PR に必須の報告テンプレート
 
