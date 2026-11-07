@@ -4,7 +4,7 @@
 //! the next number under a row lock, so two concurrent writers never share one
 //! and a reader can name an exact point in the history.
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::PgError;
 
@@ -15,14 +15,27 @@ use crate::error::PgError;
 /// monotonicity rather than "no gaps": a gap is harmless, a duplicate is not.
 pub async fn next_revision(pool: &PgPool, scope: &str) -> Result<u64, PgError> {
     let mut tx = pool.begin().await?;
+    let revision = next_revision_in(&mut tx, scope).await?;
+    tx.commit().await?;
+    Ok(revision)
+}
 
+/// Advances the counter inside an existing transaction.
+///
+/// A writer that records facts must take the number and write the facts in the
+/// same transaction, so a crash cannot leave a revision with no facts or facts
+/// with no revision.
+pub async fn next_revision_in(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &str,
+) -> Result<u64, PgError> {
     // Insert the counter on first use, then lock the row and advance it.
     sqlx::query(
         "INSERT INTO scope_revisions (scope_id, last_revision) VALUES ($1, 0) \
          ON CONFLICT (scope_id) DO NOTHING",
     )
     .bind(scope)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
 
     let last: i64 = sqlx::query_scalar(
@@ -30,10 +43,9 @@ pub async fn next_revision(pool: &PgPool, scope: &str) -> Result<u64, PgError> {
          WHERE scope_id = $1 RETURNING last_revision",
     )
     .bind(scope)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
 
-    tx.commit().await?;
     Ok(u64::try_from(last).expect("revision is positive"))
 }
 
