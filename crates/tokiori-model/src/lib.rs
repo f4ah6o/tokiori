@@ -8,6 +8,7 @@
 mod canonical;
 mod error;
 mod model;
+mod resolution;
 mod time;
 mod valid_time;
 
@@ -17,5 +18,6 @@ pub use model::{
     AttributeType, Cardinality, Entity, EntityDef, Model, ModelDocument, Relation, RelationDef,
     Role, RoleDef, normalize, parse_model_str,
 };
+pub use resolution::{FactVersion, Resolution, resolve, resolve_cloned};
 pub use time::{TimeError, business_day_start};
 pub use valid_time::{ValidTime, ValidTimeError};
