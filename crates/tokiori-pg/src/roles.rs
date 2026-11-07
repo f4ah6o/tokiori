@@ -64,6 +64,20 @@ pub(crate) async fn set_role_in(
     tx: &mut Transaction<'_, Postgres>,
     input: &SetRole,
 ) -> Result<u64, PgError> {
+    let revision = crate::revision::next_revision_in(tx, &input.scope).await?;
+    set_role_at(tx, input, revision).await
+}
+
+/// Applies a role change under a revision the caller already holds.
+///
+/// An operation takes one revision for the whole change, so its effect and its
+/// record share a number; allocating again inside would put the effect in a
+/// later revision than the operation claims.
+pub(crate) async fn set_role_at(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &SetRole,
+    revision: u64,
+) -> Result<u64, PgError> {
     {
         let model = PgStore::load_latest_model(tx, &input.scope).await?;
         let Some(relation) = model.relations.get(&input.relation_type) else {
@@ -104,14 +118,19 @@ pub(crate) async fn set_role_in(
             Some(_) => {}
         }
 
-        let revision = crate::revision::next_revision_in(tx, &input.scope).await?;
         let recorded = i64::try_from(revision).expect("revision fits");
 
-        // Close overlapping current versions and cut the overlap out of them.
+        // Close the current versions this change supersedes. Only the recorded
+        // interval is closed: a version's valid interval describes what was
+        // true, and a later revision must not rewrite it. Narrowing it here
+        // would make an earlier revision stop seeing what it believed.
         sqlx::query(
             "UPDATE relation_role_versions \
              SET recorded_to = $5, \
-                 valid_until = CASE WHEN valid_from < $6 THEN $6 ELSE valid_until END \
+                 valid_until = CASE \
+                     WHEN valid_from < $6 THEN $6 \
+                     ELSE valid_until \
+                 END \
              WHERE scope_id = $1 AND relation_type = $2 AND relation_id = $3 AND role = $4 \
                AND recorded_to IS NULL \
                AND (valid_until IS NULL OR valid_until > $6) \

@@ -11,7 +11,7 @@ use tokiori_model::ValidTime;
 use crate::error::PgError;
 use crate::operations::{OperationKey, record_operation_in};
 use crate::roles::StoredRoleVersion;
-use crate::roles::{SetRole, set_role_in};
+use crate::roles::{SetRole, set_role_at};
 use crate::store::PgStore;
 
 /// A request to transfer an employee to another department.
@@ -98,11 +98,12 @@ impl PgStore {
         }
 
         let revision = crate::revision::next_revision_in(&mut tx, &request.scope).await?;
+        let from_department = current.clone();
 
         // Opening the new department closes whatever covered that date: the
         // write path cuts the overlap out of the old version, so the old
         // department keeps its own start and simply ends on the effective date.
-        set_role_in(
+        set_role_at(
             &mut tx,
             &SetRole {
                 scope: request.scope.clone(),
@@ -112,11 +113,15 @@ impl PgStore {
                 participant_id: request.to_department.clone(),
                 valid_time: ValidTime::unbounded_from(request.effective_on),
             },
+            revision,
         )
         .await?;
 
+        // The previous department is part of the recorded result so a
+        // cancellation can restore it without re-deriving history.
         let result = json!({
             "employee": request.employee,
+            "from_department": from_department,
             "to_department": request.to_department,
             "effective_on": request.effective_on,
         });

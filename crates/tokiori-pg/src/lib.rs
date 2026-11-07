@@ -4,6 +4,7 @@
 //! written, and a rejected operation rolls back, so a failed request never
 //! leaves a partially written relation behind.
 
+mod cancel;
 mod cutover;
 mod error;
 mod facts;
@@ -13,6 +14,7 @@ mod roles;
 mod store;
 mod transfer;
 
+pub use cancel::CancelTransfer;
 pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};
 pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
