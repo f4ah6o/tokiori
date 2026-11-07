@@ -91,6 +91,10 @@ pub enum PgError {
         operation_type: String,
         idempotency_key: String,
     },
+    #[error("{what} does not exist")]
+    NotFound { what: String },
+    #[error("invalid query: {0}")]
+    InvalidQuery(#[from] tokiori_model::QueryError),
     #[error("valid interval starting {from} and ending {until} is empty")]
     EmptyInterval { from: String, until: String },
     #[error("database error: {0}")]
@@ -122,6 +126,8 @@ impl PgError {
             Self::IdempotencyConflict { .. } => "idempotency_conflict",
             Self::PreconditionFailed { .. } => "precondition_failed",
             Self::OperationNotFound { .. } => "operation_not_found",
+            Self::NotFound { .. } => "not_found",
+            Self::InvalidQuery(_) => "invalid_query",
             Self::EmptyInterval { .. } => "empty_interval",
             Self::Db(_) => "database_error",
             Self::Migrate(_) => "migration_error",

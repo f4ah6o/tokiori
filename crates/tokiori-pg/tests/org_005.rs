@@ -98,6 +98,7 @@ async fn role_version_count(store: &PgStore) -> i64 {
 async fn the_same_request_twice_applies_once_and_returns_the_same_result() {
     let Some(fx) = seeded().await else { return };
 
+    let before = role_version_count(&fx.store).await;
     let first = fx
         .store
         .transfer(transfer(&fx, "req-1"))
@@ -113,11 +114,11 @@ async fn the_same_request_twice_applies_once_and_returns_the_same_result() {
     assert!(!second.applied, "the replay must not apply again");
     assert_eq!(first.revision, second.revision);
     assert_eq!(first.result, second.result);
-    // The baseline version was closed and one new version opened.
+    // One transfer opens one new version; the replay opens none.
     assert_eq!(
-        role_version_count(&fx.store).await,
-        2,
-        "baseline plus one move"
+        role_version_count(&fx.store).await - before,
+        1,
+        "the replay added no version"
     );
 
     fx.cleanup().await;
@@ -157,6 +158,7 @@ async fn concurrent_replays_apply_the_transfer_once() {
     let store = fx.store.clone();
     let scope = fx.scope.clone();
 
+    let before = role_version_count(&fx.store).await;
     let mut handles = Vec::new();
     for _ in 0..3 {
         let store = store.clone();
@@ -193,7 +195,7 @@ async fn concurrent_replays_apply_the_transfer_once() {
     }
 
     assert_eq!(applied, 1, "exactly one call applied the transfer");
-    assert_eq!(role_version_count(&fx.store).await, 2);
+    assert_eq!(role_version_count(&fx.store).await - before, 1);
     let _ = revisions;
 
     fx.cleanup().await;
@@ -202,6 +204,7 @@ async fn concurrent_replays_apply_the_transfer_once() {
 #[tokio::test]
 async fn a_rejected_precondition_records_nothing() {
     let Some(fx) = seeded().await else { return };
+    let before = role_version_count(&fx.store).await;
     let mut request = transfer(&fx, "req-1");
     request.employee = "E999".to_owned();
 
@@ -216,7 +219,11 @@ async fn a_rejected_precondition_records_nothing() {
         idempotency_key: "req-1".to_owned(),
     };
     assert!(fx.store.find_operation(&key).await.expect("read").is_none());
-    assert_eq!(role_version_count(&fx.store).await, 1, "only the baseline");
+    assert_eq!(
+        role_version_count(&fx.store).await,
+        before,
+        "no version was added"
+    );
     assert_eq!(
         department_at(&fx.store, &fx.scope, day(2027, 7, 1))
             .await

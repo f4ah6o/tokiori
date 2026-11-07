@@ -11,6 +11,7 @@ mod error;
 mod facts;
 mod operations;
 mod outbox;
+mod query_exec;
 mod revision;
 mod roles;
 mod store;
@@ -23,6 +24,7 @@ pub use error::{ApplyOutcome, PgError};
 pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
 pub use operations::{OperationKey, OperationRecord, input_digest};
 pub use outbox::OutboxEvent;
+pub use query_exec::{QueryResult, QueryRow};
 pub use revision::{latest_revision, next_revision};
 pub use roles::{ReadRole, RoleAnswer, SetRole};
 pub use store::{

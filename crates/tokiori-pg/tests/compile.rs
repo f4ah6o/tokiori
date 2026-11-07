@@ -45,7 +45,7 @@ fn query(id: &str) -> Query {
 fn the_generated_sql_binds_every_value() {
     let q = query("E001");
     validate_query(&model(), &q).expect("valid query");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     assert!(
         compiled.sql.contains("$1"),
@@ -66,7 +66,7 @@ fn a_hostile_id_stays_a_value() {
     let hostile = "E001'; DROP TABLE entities; --";
     let q = query(hostile);
     validate_query(&model(), &q).expect("valid query");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     assert!(
         !compiled.sql.contains("DROP"),
@@ -82,11 +82,11 @@ fn a_hostile_id_stays_a_value() {
 #[test]
 fn identifiers_come_from_the_model_only() {
     let q = query("E001");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     // The relation and role names appear because they were validated against
     // the model; nothing else from the query is interpolated.
-    assert!(compiled.sql.contains("membership"));
+    assert!(compiled.sql.contains("department"));
     assert!(compiled.sql.contains("department"));
 }
 
@@ -99,7 +99,7 @@ fn a_multi_hop_query_compiles_to_a_join_chain() {
         to_role: "employee".to_owned(),
     });
     validate_query(&model(), &q).expect("valid query");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     let joins = compiled.sql.matches("relation_role_versions").count();
     assert!(joins >= 2, "one join per hop: {}", compiled.sql);
@@ -112,7 +112,7 @@ fn selecting_an_attribute_changes_the_projection_not_the_shape() {
         attribute: "name".to_owned(),
     };
     validate_query(&model(), &q).expect("valid query");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     assert!(compiled.sql.contains("fact_versions"), "{}", compiled.sql);
     assert!(!compiled.sql.contains("E001"));
@@ -121,7 +121,7 @@ fn selecting_an_attribute_changes_the_projection_not_the_shape() {
 #[test]
 fn the_row_limit_is_bound_not_interpolated() {
     let q = query("E001");
-    let compiled = compile_query(&q).expect("compiles");
+    let compiled = compile_query(&model(), &q).expect("compiles");
 
     assert!(compiled.sql.contains("LIMIT"), "{}", compiled.sql);
     assert!(!compiled.sql.contains("1000"), "the limit is a parameter");

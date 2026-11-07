@@ -266,7 +266,7 @@ fn an_invalid_model_file_is_rejected_before_any_database_access() {
 /// Seeds the organization and records the ORG-004 history through the CLI.
 ///
 /// Returns the scope so callers can query it.
-fn seed_correction_history(url: &str) -> String {
+fn seed_correction_history(url: &str) -> (String, u64, u64) {
     let scope = unique_scope();
     let model = example("model.json");
     let model = model.to_str().expect("utf-8 path");
@@ -302,15 +302,21 @@ fn seed_correction_history(url: &str) -> String {
         ],
     ));
 
-    // r1 baseline, r2 move on 7/1, r3/r4 correct the move to 7/15.
+    // Baseline, then the move on 7/1, then the correction to 7/15.
     set_department(url, &scope, "D-SALES", "2027-04-01", None);
-    set_department(url, &scope, "D-PLANNING", "2027-07-01", None);
+    let moved = set_department(url, &scope, "D-PLANNING", "2027-07-01", None);
     set_department(url, &scope, "D-SALES", "2027-07-01", Some("2027-07-15"));
-    set_department(url, &scope, "D-PLANNING", "2027-07-15", None);
-    scope
+    let corrected = set_department(url, &scope, "D-PLANNING", "2027-07-15", None);
+    (scope, moved, corrected)
 }
 
-fn set_department(url: &str, scope: &str, participant: &str, from: &str, until: Option<&str>) {
+fn set_department(
+    url: &str,
+    scope: &str,
+    participant: &str,
+    from: &str,
+    until: Option<&str>,
+) -> u64 {
     let mut args = vec![
         "role",
         "set",
@@ -329,7 +335,8 @@ fn set_department(url: &str, scope: &str, participant: &str, from: &str, until: 
         args.push("--valid-until");
         args.push(until);
     }
-    json(&tokiori(url, scope, &args));
+    let outcome = json(&tokiori(url, scope, &args));
+    outcome["revision"].as_u64().expect("a revision")
 }
 
 fn department_at(url: &str, scope: &str, valid_at: &str, revision: &str) -> Value {
@@ -359,14 +366,20 @@ fn a_correction_is_visible_through_the_cli_at_both_revisions() {
         eprintln!("SKIPPED: TOKIORI_TEST_DATABASE_URL is not set; no CLI evidence");
         return;
     };
-    let scope = seed_correction_history(&url);
+    let (scope, moved, corrected) = seed_correction_history(&url);
 
-    let before = department_at(&url, &scope, "2027-07-10", "2");
-    let after = department_at(&url, &scope, "2027-07-10", "4");
+    // The revision numbers are read from the commands rather than assumed:
+    // creating a relation now takes a revision of its own, and hard-coding
+    // them made this test depend on how many writes happened to come before.
+    let before = department_at(&url, &scope, "2027-07-10", &moved.to_string());
+    let after = department_at(&url, &scope, "2027-07-10", &corrected.to_string());
 
     assert_eq!(
         before["participant"], "D-PLANNING",
-        "r2 believed the move was on 7/1"
+        "the move's revision believed it took effect on 7/1"
     );
-    assert_eq!(after["participant"], "D-SALES", "r4 knows it was on 7/15");
+    assert_eq!(
+        after["participant"], "D-SALES",
+        "the correction knows it took effect on 7/15"
+    );
 }

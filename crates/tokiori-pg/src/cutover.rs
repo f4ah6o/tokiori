@@ -54,92 +54,50 @@ impl PgStore {
         .fetch_one(&mut *tx)
         .await?;
 
-        if current > 0 {
+        // The import is identified by its own ledger entry, not by the counter:
+        // creating a relation allocates a revision too, so a P0-era scope can
+        // already have a non-zero counter without having been imported.
+        let imported: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM operations \
+             WHERE scope_id = $1 AND operation_type = 'cutover' \
+               AND idempotency_key = 'initial'",
+        )
+        .bind(&input.scope)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(revision) = imported {
             tx.rollback().await?;
             return Ok(CutoverOutcome {
-                revision: u64::try_from(current).expect("positive"),
+                revision: u64::try_from(revision).expect("positive"),
                 created: false,
                 entities: 0,
                 relations: 0,
             });
         }
+        let _ = current;
 
         let revision = crate::revision::next_revision_in(&mut tx, &input.scope).await?;
         let recorded = i64::try_from(revision).expect("revision fits");
 
-        // Entities: P0 kept no effective start, so the imported value is only
-        // asserted from the cutover date onward.
-        let entities: Vec<(String, String, Value)> =
-            sqlx::query_as("SELECT entity_type, id, attributes FROM entities WHERE scope_id = $1")
-                .bind(&input.scope)
-                .fetch_all(&mut *tx)
-                .await?;
+        let imported_entities = import_entities(&mut tx, &input.scope, input.at, recorded).await?;
+        let imported_relations = import_relations(&mut tx, &input.scope, recorded).await?;
 
-        let mut imported_entities = 0usize;
-        for (entity_type, entity_id, attributes) in &entities {
-            let Some(map) = attributes.as_object() else {
-                continue;
-            };
-            for (attribute, value) in map {
-                sqlx::query(
-                    "INSERT INTO fact_versions \
-                     (scope_id, entity_type, entity_id, attribute, valid_from, recorded_from, value) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                )
-                .bind(&input.scope)
-                .bind(entity_type)
-                .bind(entity_id)
-                .bind(attribute)
-                .bind(input.at)
-                .bind(recorded)
-                .bind(value)
-                .execute(&mut *tx)
-                .await?;
-            }
-            imported_entities += 1;
-        }
-
-        // Relations: P0 did record valid_from/valid_until, so those are kept.
-        let relations: Vec<(String, String, NaiveDate, Option<NaiveDate>)> = sqlx::query_as(
-            "SELECT relation_type, id, valid_from, valid_until FROM relations WHERE scope_id = $1",
+        // Record the import itself, so a re-run recognises it.
+        crate::operations::record_operation_in(
+            &mut tx,
+            &crate::operations::OperationKey {
+                scope: input.scope.clone(),
+                operation_type: "cutover".to_owned(),
+                idempotency_key: "initial".to_owned(),
+            },
+            &serde_json::json!({ "at": input.at }),
+            revision,
+            "cutover",
+            "import P0 state",
+            &serde_json::json!({ "revision": revision }),
         )
-        .bind(&input.scope)
-        .fetch_all(&mut *tx)
         .await?;
-
-        let mut imported_relations = 0usize;
-        for (relation_type, relation_id, valid_from, valid_until) in &relations {
-            let roles: Vec<(String, String, String)> = sqlx::query_as(
-                "SELECT role, participant_entity_type, participant_id FROM relation_roles \
-                 WHERE scope_id = $1 AND relation_type = $2 AND relation_id = $3",
-            )
-            .bind(&input.scope)
-            .bind(relation_type)
-            .bind(relation_id)
-            .fetch_all(&mut *tx)
-            .await?;
-
-            for (role, participant_entity_type, participant_id) in roles {
-                sqlx::query(
-                    "INSERT INTO relation_role_versions \
-                     (scope_id, relation_type, relation_id, role, valid_from, valid_until, \
-                      recorded_from, participant_entity_type, participant_id) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                )
-                .bind(&input.scope)
-                .bind(relation_type)
-                .bind(relation_id)
-                .bind(role)
-                .bind(valid_from)
-                .bind(valid_until)
-                .bind(recorded)
-                .bind(participant_entity_type)
-                .bind(participant_id)
-                .execute(&mut *tx)
-                .await?;
-            }
-            imported_relations += 1;
-        }
 
         tx.commit().await?;
         Ok(CutoverOutcome {
@@ -149,4 +107,90 @@ impl PgStore {
             relations: imported_relations,
         })
     }
+}
+
+/// Imports entity attributes as facts asserted from the cutover date.
+///
+/// P0 kept no effective start for an entity, so claiming any earlier date
+/// would invent history.
+async fn import_entities(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: &str,
+    at: chrono::NaiveDate,
+    recorded: i64,
+) -> Result<usize, PgError> {
+    let entities: Vec<(String, String, Value)> =
+        sqlx::query_as("SELECT entity_type, id, attributes FROM entities WHERE scope_id = $1")
+            .bind(scope)
+            .fetch_all(&mut **tx)
+            .await?;
+
+    let mut imported = 0usize;
+    for (entity_type, entity_id, attributes) in &entities {
+        let Some(map) = attributes.as_object() else {
+            continue;
+        };
+        for (attribute, value) in map {
+            sqlx::query(
+                "INSERT INTO fact_versions                  (scope_id, entity_type, entity_id, attribute, valid_from, recorded_from, value)                  VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(scope)
+            .bind(entity_type)
+            .bind(entity_id)
+            .bind(attribute)
+            .bind(at)
+            .bind(recorded)
+            .bind(value)
+            .execute(&mut **tx)
+            .await?;
+        }
+        imported += 1;
+    }
+    Ok(imported)
+}
+
+/// Imports relation roles, keeping the valid interval P0 did record.
+async fn import_relations(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: &str,
+    recorded: i64,
+) -> Result<usize, PgError> {
+    let relations: Vec<(String, String, chrono::NaiveDate, Option<chrono::NaiveDate>)> =
+        sqlx::query_as(
+            "SELECT relation_type, id, valid_from, valid_until FROM relations WHERE scope_id = $1",
+        )
+        .bind(scope)
+        .fetch_all(&mut **tx)
+        .await?;
+
+    let mut imported = 0usize;
+    for (relation_type, relation_id, valid_from, valid_until) in &relations {
+        let roles: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT role, participant_entity_type, participant_id FROM relation_roles              WHERE scope_id = $1 AND relation_type = $2 AND relation_id = $3",
+        )
+        .bind(scope)
+        .bind(relation_type)
+        .bind(relation_id)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        for (role, participant_entity_type, participant_id) in roles {
+            sqlx::query(
+                "INSERT INTO relation_role_versions                  (scope_id, relation_type, relation_id, role, valid_from, valid_until,                   recorded_from, participant_entity_type, participant_id)                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            )
+            .bind(scope)
+            .bind(relation_type)
+            .bind(relation_id)
+            .bind(role)
+            .bind(valid_from)
+            .bind(valid_until)
+            .bind(recorded)
+            .bind(participant_entity_type)
+            .bind(participant_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        imported += 1;
+    }
+    Ok(imported)
 }

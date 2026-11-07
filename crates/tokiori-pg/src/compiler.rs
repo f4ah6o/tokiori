@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use tokiori_model::{Query, Select};
+use tokiori_model::{Model, Query, Select};
 
 use crate::error::PgError;
 
@@ -22,7 +22,7 @@ pub struct CompiledQuery {
 ///
 /// The caller must validate first: this function trusts the names it is given
 /// to exist in the model, and interpolates them as identifiers.
-pub fn compile_query(query: &Query) -> Result<CompiledQuery, PgError> {
+pub fn compile_query(model: &Model, query: &Query) -> Result<CompiledQuery, PgError> {
     let mut params = Vec::new();
     let mut sql = String::new();
 
@@ -38,17 +38,29 @@ pub fn compile_query(query: &Query) -> Result<CompiledQuery, PgError> {
     let scope = bind(&mut params, "{scope}".to_owned());
     let start_id = bind(&mut params, query.start.id.clone());
     let valid_at = bind(&mut params, query.valid_at.to_string());
+    // A query with no named revision is answered at the newest one, which the
+    // caller resolves before compiling; the sentinel here is never bound.
     let revision = bind(
         &mut params,
         query
             .known_revision
-            .map_or_else(|| "\u{0}max".to_owned(), |r| r.to_string()),
+            .map_or_else(|| "0".to_owned(), |r| r.to_string()),
     );
     let limit = bind(&mut params, query.limits.max_rows.to_string());
 
     // Each hop joins the relation's role versions for the current position and
     // the next one, both visible at the same revision and covering the date.
-    let from_type = query.start.entity_type.clone();
+    // The type the traversal ends at, which is what a selected attribute
+    // belongs to. Resolving it needs the model: a role names a type, and only
+    // the model knows which.
+    let mut from_type = query.start.entity_type.clone();
+    for hop in &query.traversal {
+        if let Some(relation) = model.relations.get(&hop.relation_type)
+            && let Some(role) = relation.roles.get(&hop.to_role)
+        {
+            from_type.clone_from(&role.entity);
+        }
+    }
     let joins = build_joins(query, &scope, &start_id, &valid_at, &revision);
     let last_alias = format!("r{}", query.traversal.len());
     let (projection, from_clause) = match &query.select {
@@ -77,8 +89,8 @@ pub fn compile_query(query: &Query) -> Result<CompiledQuery, PgError> {
                       AND f.attribute = '{attribute}' \
                       AND f.valid_from <= {valid_at}::date \
                       AND (f.valid_until IS NULL OR f.valid_until > {valid_at}::date) \
-                      AND f.recorded_from <= {revision} \
-                      AND (f.recorded_to IS NULL OR f.recorded_to >= {revision}) \
+                      AND f.recorded_from <= {revision}::bigint \
+                      AND (f.recorded_to IS NULL OR f.recorded_to >= {revision}::bigint) \
                     ORDER BY f.recorded_from DESC LIMIT 1 ) v ON true",
             );
             (format!("{owner} AS id, v.value AS value"), from_clause)
@@ -89,16 +101,15 @@ pub fn compile_query(query: &Query) -> Result<CompiledQuery, PgError> {
         sql,
         "SELECT DISTINCT {projection} FROM relation_role_versions r0{joins}{from_clause} \
          WHERE r0.scope_id = {scope} AND r0.participant_id = {start_id} \
-         LIMIT {limit}"
+         LIMIT {limit}::bigint"
     );
-
     // The zero-depth case has no relation to anchor on; it selects the start.
     if query.traversal.is_empty() {
         sql = match &query.select {
             Select::Ids => format!(
                 "SELECT {start_id} AS id FROM entities \
                  WHERE scope_id = {scope} AND entity_type = '{from_type}' AND id = {start_id} \
-                 LIMIT {limit}"
+                 LIMIT {limit}::bigint"
             ),
             Select::Attribute { attribute } => format!(
                 "SELECT e.id AS id, v.value AS value FROM entities e \
@@ -108,11 +119,11 @@ pub fn compile_query(query: &Query) -> Result<CompiledQuery, PgError> {
                       AND f.entity_id = e.id AND f.attribute = '{attribute}' \
                       AND f.valid_from <= {valid_at}::date \
                       AND (f.valid_until IS NULL OR f.valid_until > {valid_at}::date) \
-                      AND f.recorded_from <= {revision} \
-                      AND (f.recorded_to IS NULL OR f.recorded_to >= {revision}) \
+                      AND f.recorded_from <= {revision}::bigint \
+                      AND (f.recorded_to IS NULL OR f.recorded_to >= {revision}::bigint) \
                     ORDER BY f.recorded_from DESC LIMIT 1 ) v ON true \
                  WHERE e.scope_id = {scope} AND e.entity_type = '{from_type}' AND e.id = {start_id} \
-                 LIMIT {limit}"
+                 LIMIT {limit}::bigint"
             ),
         };
     }
@@ -146,18 +157,44 @@ fn build_joins(
         let relation = &hop.relation_type;
         let from_role = &hop.from_role;
         let to_role = &hop.to_role;
-        let visible = |a: &str| {
-            format!(
-                "{a}.valid_from <= {valid_at}::date                  AND ({a}.valid_until IS NULL OR {a}.valid_until > {valid_at}::date)                  AND {a}.recorded_from <= {revision}                  AND ({a}.recorded_to IS NULL OR {a}.recorded_to >= {revision})"
-            )
-        };
-        let from_visible = visible(&alias);
-        let to_visible = visible(&next_alias);
+        let from_visible = visible_at(&alias, valid_at, revision);
+        let to_visible = visible_at(&next_alias, valid_at, revision);
+
+        // The first hop's from-role is the FROM clause (`r0`), so it is not
+        // joined again; every later hop joins its own from-role.
+        if index > 0 {
+            let _ = write!(
+                joins,
+                r"
+ JOIN relation_role_versions {alias}
+   ON {alias}.scope_id = {scope}
+  AND {alias}.relation_type = '{relation}'
+  AND {alias}.role = '{from_role}'
+  AND {alias}.participant_id = {from_id}
+  AND {from_visible}"
+            );
+        }
         let _ = write!(
             joins,
-            " JOIN relation_role_versions {alias}              ON {alias}.scope_id = {scope}             AND {alias}.relation_type = '{relation}'             AND {alias}.role = '{from_role}'             AND {alias}.participant_id = {from_id}             AND {from_visible}              JOIN relation_role_versions {next_alias}              ON {next_alias}.scope_id = {alias}.scope_id             AND {next_alias}.relation_type = {alias}.relation_type             AND {next_alias}.relation_id = {alias}.relation_id             AND {next_alias}.role = '{to_role}'             AND {to_visible}"
+            r"
+ JOIN relation_role_versions {next_alias}
+   ON {next_alias}.scope_id = {alias}.scope_id
+  AND {next_alias}.relation_type = {alias}.relation_type
+  AND {next_alias}.relation_id = {alias}.relation_id
+  AND {next_alias}.role = '{to_role}'
+  AND {to_visible}"
         );
         from_id = format!("{next_alias}.participant_id");
     }
     joins
+}
+
+/// The visibility predicate: in effect on the date and known at the revision.
+fn visible_at(alias: &str, valid_at: &str, revision: &str) -> String {
+    format!(
+        r"{alias}.valid_from <= {valid_at}::date
+  AND ({alias}.valid_until IS NULL OR {alias}.valid_until > {valid_at}::date)
+  AND {alias}.recorded_from <= {revision}::bigint
+  AND ({alias}.recorded_to IS NULL OR {alias}.recorded_to >= {revision}::bigint)"
+    )
 }
