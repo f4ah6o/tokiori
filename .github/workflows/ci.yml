@@ -95,8 +95,13 @@ jobs:
       # steps because `jobs.<job_id>.if` cannot read the `env` context.
       - uses: dtolnay/rust-toolchain@nightly
         if: env.ACTRUN_LOCAL != 'true'
-      - uses: taiki-e/install-action@cargo-fuzz
+      # `taiki-e/install-action@cargo-fuzz` is not a tool tag: it resolves to
+      # the action but installs nothing, leaving `cargo fuzz` missing. Pin the
+      # tool explicitly so the gate actually runs.
+      - uses: taiki-e/install-action@v2
         if: env.ACTRUN_LOCAL != 'true'
+        with:
+          tool: cargo-fuzz
       - name: Fuzz the model parser
         if: env.ACTRUN_LOCAL != 'true'
         working-directory: fuzz
