@@ -44,16 +44,12 @@ impl PgStore {
 
         let revision = crate::revision::next_revision_in(&mut tx, &input.scope).await?;
 
-        // Close the still-current versions this change supersedes. Only the
-        // recorded interval is closed: a version's valid interval describes
-        // what was true, and a later revision must not rewrite it.
+        // Close the versions this change supersedes. Only `recorded_to` is set:
+        // a version's valid interval is what that version *asserted*, and a
+        // later revision must not rewrite it. Trimming it here would make a
+        // query at an earlier revision stop seeing what it believed.
         sqlx::query(
-            "UPDATE fact_versions \
-             SET recorded_to = $5, \
-                 valid_until = CASE \
-                     WHEN valid_from < $6 THEN $6 \
-                     ELSE valid_until \
-                 END \
+            "UPDATE fact_versions SET recorded_to = $5 \
              WHERE scope_id = $1 AND entity_type = $2 AND entity_id = $3 AND attribute = $4 \
                AND recorded_to IS NULL \
                AND (valid_until IS NULL OR valid_until > $6) \

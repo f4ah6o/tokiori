@@ -120,17 +120,12 @@ pub(crate) async fn set_role_at(
 
         let recorded = i64::try_from(revision).expect("revision fits");
 
-        // Close the current versions this change supersedes. Only the recorded
-        // interval is closed: a version's valid interval describes what was
-        // true, and a later revision must not rewrite it. Narrowing it here
-        // would make an earlier revision stop seeing what it believed.
+        // Close the versions this change supersedes. Only `recorded_to` is set:
+        // a version's valid interval is what that version *asserted*, and a
+        // later revision must not rewrite it. Trimming it here would make a
+        // query at an earlier revision stop seeing what it believed.
         sqlx::query(
-            "UPDATE relation_role_versions \
-             SET recorded_to = $5, \
-                 valid_until = CASE \
-                     WHEN valid_from < $6 THEN $6 \
-                     ELSE valid_until \
-                 END \
+            "UPDATE relation_role_versions SET recorded_to = $5 \
              WHERE scope_id = $1 AND relation_type = $2 AND relation_id = $3 AND role = $4 \
                AND recorded_to IS NULL \
                AND (valid_until IS NULL OR valid_until > $6) \

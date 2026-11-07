@@ -5,6 +5,7 @@
 //! leaves a partially written relation behind.
 
 mod cancel;
+mod chart;
 mod compiler;
 mod cutover;
 mod error;
@@ -18,6 +19,7 @@ mod store;
 mod transfer;
 
 pub use cancel::CancelTransfer;
+pub use chart::{OrgChart, OrgRow};
 pub use compiler::{CompiledQuery, compile_query};
 pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};

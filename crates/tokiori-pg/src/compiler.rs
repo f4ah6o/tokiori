@@ -179,6 +179,11 @@ fn build_joins(
             origin = from_alias;
         }
 
+        // Only the newest visible version of a role counts. Several versions
+        // can cover the same date once a correction leaves the older one's
+        // interval untouched, and the read path resolves that by taking the
+        // newest knowledge; the query must do the same or the two disagree.
+        let newest = newest_version(&next_alias, valid_at, revision);
         let _ = write!(
             joins,
             "\n JOIN relation_role_versions {next_alias} \
@@ -186,7 +191,8 @@ fn build_joins(
              \n  AND {next_alias}.relation_type = {origin}.relation_type \
              \n  AND {next_alias}.relation_id = {origin}.relation_id \
              \n  AND {next_alias}.role = '{to_role}' \
-             \n  AND {to_visible}"
+             \n  AND {to_visible} \
+             \n  AND {newest}"
         );
         from_id = format!("{next_alias}.participant_id");
     }
@@ -200,5 +206,12 @@ fn visible_at(alias: &str, valid_at: &str, revision: &str) -> String {
   AND ({alias}.valid_until IS NULL OR {alias}.valid_until > {valid_at}::date)
   AND {alias}.recorded_from <= {revision}::bigint
   AND ({alias}.recorded_to IS NULL OR {alias}.recorded_to >= {revision}::bigint)"
+    )
+}
+
+/// Restricts a role alias to the newest version visible at the revision.
+fn newest_version(alias: &str, valid_at: &str, revision: &str) -> String {
+    format!(
+        "{alias}.recorded_from = (              SELECT max(v.recorded_from) FROM relation_role_versions v              WHERE v.scope_id = {alias}.scope_id                AND v.relation_type = {alias}.relation_type                AND v.relation_id = {alias}.relation_id                AND v.role = {alias}.role                AND v.valid_from <= {valid_at}::date                AND (v.valid_until IS NULL OR v.valid_until > {valid_at}::date)                AND v.recorded_from <= {revision}::bigint                AND (v.recorded_to IS NULL OR v.recorded_to >= {revision}::bigint) )"
     )
 }
