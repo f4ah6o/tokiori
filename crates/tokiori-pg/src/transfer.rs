@@ -135,6 +135,14 @@ impl PgStore {
             &result,
         )
         .await?;
+        crate::outbox::enqueue_in(
+            &mut tx,
+            &request.scope,
+            revision,
+            "transfer.applied",
+            &result,
+        )
+        .await?;
 
         tx.commit().await?;
         Ok(OperationOutcome {

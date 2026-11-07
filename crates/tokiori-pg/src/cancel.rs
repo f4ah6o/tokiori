@@ -199,6 +199,14 @@ impl PgStore {
             &result,
         )
         .await?;
+        crate::outbox::enqueue_in(
+            &mut tx,
+            &request.scope,
+            revision,
+            "transfer.cancelled",
+            &result,
+        )
+        .await?;
 
         tx.commit().await?;
         Ok(OperationOutcome {
