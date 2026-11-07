@@ -1,0 +1,12 @@
+# Local reproduction of .github/workflows/ci.yml with mizchi/actrun.
+#
+#   actrun workflow run .github/workflows/ci.yml --workspace-mode local
+#
+# Run in place: the worktree mode copies committed files only, which would
+# silently test a different tree than the one being edited.
+workspace_mode = "local"
+
+# actrun does not implement the toolchain actions; the local Rust toolchain is
+# the one under test, so the setup step only reports what is installed.
+[override."dtolnay/rust-toolchain"]
+run = "rustc --version && cargo --version"
