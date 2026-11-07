@@ -170,7 +170,7 @@ async fn an_acknowledged_event_is_not_delivered_again() {
 
     let events = fx.store.claim_outbox(&fx.scope, 10).await.expect("claim");
     fx.store
-        .ack_outbox(&[events[0].event_id])
+        .ack_outbox(&fx.scope, &[events[0].event_id])
         .await
         .expect("ack");
 
@@ -181,6 +181,35 @@ async fn an_acknowledged_event_is_not_delivered_again() {
 }
 
 #[tokio::test]
+async fn a_caller_cannot_acknowledge_another_scopes_events() {
+    let Some(fx) = seeded().await else { return };
+    fx.store
+        .transfer(transfer(&fx, "req-1"))
+        .await
+        .expect("transfer");
+
+    let events = fx.store.claim_outbox(&fx.scope, 10).await.expect("claim");
+    assert!(!events.is_empty(), "the transfer wrote an event");
+
+    // A different scope must not be able to retire these events: an ack that
+    // ignored the scope would let one tenant silently consume another's.
+    let acknowledged = fx
+        .store
+        .ack_outbox("some-other-scope", &[events[0].event_id])
+        .await
+        .expect("ack");
+    assert_eq!(acknowledged, 0, "nothing in that scope was acknowledged");
+
+    // The event is still pending for its own scope.
+    let again = fx.store.claim_outbox(&fx.scope, 10).await.expect("claim");
+    assert!(
+        again.iter().any(|e| e.event_id == events[0].event_id),
+        "the event is still deliverable to its own scope"
+    );
+
+    fx.cleanup().await;
+}
+#[tokio::test]
 async fn acknowledging_twice_is_harmless() {
     let Some(fx) = seeded().await else { return };
     fx.store
@@ -190,11 +219,11 @@ async fn acknowledging_twice_is_harmless() {
     let events = fx.store.claim_outbox(&fx.scope, 10).await.expect("claim");
 
     fx.store
-        .ack_outbox(&[events[0].event_id])
+        .ack_outbox(&fx.scope, &[events[0].event_id])
         .await
         .expect("first ack");
     fx.store
-        .ack_outbox(&[events[0].event_id])
+        .ack_outbox(&fx.scope, &[events[0].event_id])
         .await
         .expect("second ack is a no-op");
 

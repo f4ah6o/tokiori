@@ -17,7 +17,8 @@ use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokiori_model::{Query as QueryAst, canonical_json};
-use tokiori_pg::{OrgChart, ReadAttribute, ReadRole};
+use tokiori_pg::{CancelTransfer, OperationOutcome, OrgChart, ReadAttribute, ReadRole, Transfer};
+use uuid::Uuid;
 
 pub use authorize::{ApiToken, AuthDecision, DenialReason, authorize};
 pub use error::ApiError;
@@ -27,7 +28,8 @@ pub use tokens::parse_tokens;
 /// Routes served by the HTTP API.
 ///
 /// Every route requires `Authorization: Bearer <token>` except `/health`, and
-/// each token grants exactly one scope; the routes read in that scope.
+/// each token grants exactly one scope; the routes read and, for the operation
+/// and outbox-ack routes, write in that scope.
 pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", get(health))
@@ -43,6 +45,10 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/v1/query", post(post_query))
         .route("/v1/org-chart", get(get_org_chart))
+        .route("/v1/operations/transfer", post(post_transfer))
+        .route("/v1/operations/cancel", post(post_cancel))
+        .route("/v1/outbox", get(get_outbox))
+        .route("/v1/outbox/ack", post(post_outbox_ack))
         .with_state(state)
 }
 
@@ -245,5 +251,182 @@ async fn get_org_chart(
         "valid_at": valid_at.to_string(),
         "known_revision": resolved_revision,
         "rows": rows,
+    })))
+}
+
+/// The body of `POST /v1/operations/transfer`.
+///
+/// The scope is never in the body: it comes from the token, so a caller can
+/// never name another scope's employee or department.
+#[derive(Debug, Deserialize)]
+struct TransferBody {
+    employee: String,
+    to_department: String,
+    /// The business date the move takes effect, `YYYY-MM-DD`.
+    effective_on: String,
+    /// The caller's request id; the idempotency key for this operation.
+    request_id: String,
+    reason: String,
+    actor: String,
+}
+
+/// The body of `POST /v1/operations/cancel`. The scope comes from the token.
+#[derive(Debug, Deserialize)]
+struct CancelBody {
+    /// The `request_id` of the transfer being undone.
+    transfer_request_id: String,
+    /// The caller's request id for the cancellation itself.
+    cancel_request_id: String,
+    reason: String,
+    actor: String,
+}
+
+/// The body of `POST /v1/outbox/ack`.
+#[derive(Debug, Deserialize)]
+struct AckBody {
+    event_ids: Vec<Uuid>,
+}
+
+/// The response shape both operation endpoints take: it mirrors
+/// [`OperationOutcome`] and names the scope it acted in.
+fn operation_outcome_json(scope: &str, outcome: &OperationOutcome) -> Value {
+    json!({
+        "scope": scope,
+        "applied": outcome.applied,
+        "revision": outcome.revision,
+        "result": outcome.result,
+    })
+}
+
+/// Applies a transfer, or recognises a replay of one.
+///
+/// A repeated `request_id` with the same input answers `applied: false` with
+/// the original revision; with different input it is 409
+/// `idempotency_conflict`. A transfer the store rejects on a missing employee,
+/// department, or membership is 409 `precondition_failed`.
+async fn post_transfer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let body: TransferBody = serde_json::from_value(body).map_err(ApiError::invalid_request)?;
+    let effective_on =
+        NaiveDate::parse_from_str(&body.effective_on, "%Y-%m-%d").map_err(|err| {
+            ApiError::invalid_request(format!("effective_on must be YYYY-MM-DD: {err}"))
+        })?;
+    let outcome = state
+        .store
+        .transfer(Transfer {
+            scope: token.scope.clone(),
+            employee: body.employee,
+            to_department: body.to_department,
+            effective_on,
+            request_id: body.request_id,
+            reason: body.reason,
+            actor: body.actor,
+        })
+        .await?;
+    Ok(Json(operation_outcome_json(&token.scope, &outcome)))
+}
+
+/// Undoes a transfer by recording the previous department again.
+///
+/// The response shape is the transfer's: a replayed cancellation answers
+/// `applied: false`, and a transfer that was already cancelled is 409 with the
+/// store's code.
+async fn post_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let body: CancelBody = serde_json::from_value(body).map_err(ApiError::invalid_request)?;
+    let outcome = state
+        .store
+        .cancel_transfer(CancelTransfer {
+            scope: token.scope.clone(),
+            transfer_request_id: body.transfer_request_id,
+            cancel_request_id: body.cancel_request_id,
+            reason: body.reason,
+            actor: body.actor,
+        })
+        .await?;
+    Ok(Json(operation_outcome_json(&token.scope, &outcome)))
+}
+
+/// The `limit` query parameter of the outbox claim.
+#[derive(Debug, Deserialize)]
+struct OutboxQuery {
+    limit: Option<String>,
+}
+
+/// Events claimed when the query omits `limit`.
+const DEFAULT_OUTBOX_LIMIT: i64 = 100;
+/// One claim never takes more than this many events.
+const MAX_OUTBOX_LIMIT: i64 = 1000;
+
+/// Parses and bounds the outbox claim's `limit`.
+///
+/// Above [`MAX_OUTBOX_LIMIT`] the request is clamped, not rejected, so a
+/// caller that asks for "everything" gets a page instead of an error.
+fn parse_outbox_limit(raw: Option<&str>) -> Result<i64, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_OUTBOX_LIMIT);
+    };
+    let parsed = raw
+        .parse::<i64>()
+        .map_err(|err| ApiError::invalid_query(format!("limit must be an integer: {err}")))?;
+    if parsed < 0 {
+        return Err(ApiError::invalid_query("limit must not be negative"));
+    }
+    Ok(parsed.min(MAX_OUTBOX_LIMIT))
+}
+
+/// Claims up to `limit` pending events for delivery.
+///
+/// Claiming is not consuming: an event stays pending until it is
+/// acknowledged, so a consumer that crashes after a claim sees it again.
+async fn get_outbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OutboxQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let limit = parse_outbox_limit(query.limit.as_deref())?;
+    let events = state.store.claim_outbox(&token.scope, limit).await?;
+    let events: Vec<Value> = events
+        .iter()
+        .map(|event| {
+            json!({
+                "event_id": event.event_id,
+                "revision": event.revision,
+                "event_type": event.event_type,
+                "payload": event.payload,
+                "created_at": event.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "scope": token.scope, "events": events })))
+}
+
+/// Acknowledges claimed events so they are never claimed again.
+///
+/// Acknowledging an already-acknowledged event is a no-op, so a consumer that
+/// retries after a crash does not fail.
+async fn post_outbox_ack(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let token = state.authenticate(&headers)?;
+    let body: AckBody = serde_json::from_value(body).map_err(ApiError::invalid_request)?;
+    let acknowledged = state
+        .store
+        .ack_outbox(&token.scope, &body.event_ids)
+        .await?;
+    Ok(Json(json!({
+        "scope": token.scope,
+        "acknowledged": acknowledged,
     })))
 }

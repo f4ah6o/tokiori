@@ -15,6 +15,7 @@ tokio.workspace = true
 tokiori-model.workspace = true
 tokiori-pg.workspace = true
 tower.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 noprop.workspace = true

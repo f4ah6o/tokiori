@@ -508,3 +508,262 @@ async fn a_request_without_a_token_to_query_is_401() {
     assert_eq!(json["code"], "missing_token");
     fx.cleanup().await;
 }
+
+/// The body `POST /v1/operations/transfer` takes for one move of E001.
+fn transfer_body(request_id: &str, to_department: &str) -> Value {
+    json!({
+        "employee": "E001",
+        "to_department": to_department,
+        "effective_on": "2027-07-01",
+        "request_id": request_id,
+        "reason": "rotation",
+        "actor": "ci",
+    })
+}
+
+#[tokio::test]
+async fn a_transfer_applies_and_the_same_request_replays_at_the_same_revision() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+    let body = transfer_body("req-1", "D-HR").to_string();
+
+    let (status, json) = post(
+        app.clone(),
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["scope"], json!(fx.scope));
+    assert_eq!(json["applied"], true);
+    assert_eq!(json["result"]["from_department"], "D-SALES");
+    assert_eq!(json["result"]["to_department"], "D-HR");
+    let revision = json["revision"].as_u64().expect("revision");
+
+    // The same request twice must not move the employee twice: the store
+    // recognizes the key and answers at the revision the apply recorded.
+    let (status, json) = post(app, "/v1/operations/transfer", Some("Bearer ci"), body).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["applied"], false);
+    assert_eq!(json["revision"].as_u64().expect("revision"), revision);
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_same_request_id_with_a_different_target_is_409_idempotency_conflict() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let (status, _) = post(
+        app.clone(),
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        transfer_body("req-1", "D-HR").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The stored digest covers the target, so the retry is a different
+    // request even though it reuses the key.
+    let (status, json) = post(
+        app,
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        transfer_body("req-1", "D-SALES").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "idempotency_conflict");
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_cancel_restores_the_previous_department() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let (status, _) = post(
+        app.clone(),
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        transfer_body("req-1", "D-HR").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let cancel = json!({
+        "transfer_request_id": "req-1",
+        "cancel_request_id": "cancel-1",
+        "reason": "mistake",
+        "actor": "ci",
+    });
+    let (status, json) = post(
+        app.clone(),
+        "/v1/operations/cancel",
+        Some("Bearer ci"),
+        cancel.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["applied"], true);
+    assert_eq!(json["result"]["restored_department"], "D-SALES");
+
+    // The chart after the cancellation holds the pre-transfer department.
+    let (status, json) = get(
+        app.clone(),
+        "/v1/org-chart?valid_at=2027-07-10",
+        Some("Bearer ci"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["rows"][0]["employee"], "E001");
+    assert_eq!(json["rows"][0]["department"], "D-SALES");
+
+    // The same cancellation replayed answers applied=false instead of
+    // compensating twice.
+    let (status, json) = post(
+        app,
+        "/v1/operations/cancel",
+        Some("Bearer ci"),
+        cancel.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["applied"], false);
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn claiming_the_outbox_returns_the_events_the_transfer_wrote() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let (status, transfer) = post(
+        app.clone(),
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        transfer_body("req-1", "D-HR").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let revision = transfer["revision"].as_u64().expect("revision");
+
+    let (status, json) = get(app, "/v1/outbox", Some("Bearer ci")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["scope"], json!(fx.scope));
+    let events = json["events"].as_array().expect("events");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event_type"], "transfer.applied");
+    assert_eq!(events[0]["revision"].as_u64(), Some(revision));
+    assert_eq!(events[0]["payload"]["employee"], "E001");
+    assert_eq!(events[0]["payload"]["to_department"], "D-HR");
+    assert!(events[0]["event_id"].is_string());
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn acking_an_event_means_it_is_not_claimed_again() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    let (status, _) = post(
+        app.clone(),
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        transfer_body("req-1", "D-HR").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Claim one event, then acknowledge exactly it.
+    let (status, json) = get(app.clone(), "/v1/outbox?limit=1", Some("Bearer ci")).await;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<Value> = json["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .map(|event| event["event_id"].clone())
+        .collect();
+    assert_eq!(ids.len(), 1);
+
+    let (status, json) = post(
+        app.clone(),
+        "/v1/outbox/ack",
+        Some("Bearer ci"),
+        json!({ "event_ids": ids }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["scope"], json!(fx.scope));
+    assert_eq!(json["acknowledged"], 1);
+
+    // An acknowledged event has left the claimable set for good.
+    let (status, json) = get(app, "/v1/outbox", Some("Bearer ci")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["events"].as_array().expect("events").len(), 0);
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_transfer_request_without_a_token_is_401() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    let app = app_for(&fx);
+    let (status, json) = post(
+        app,
+        "/v1/operations/transfer",
+        None,
+        transfer_body("req-1", "D-HR").to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["code"], "missing_token");
+    fx.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_transfer_the_store_rejects_on_a_precondition_is_409_precondition_failed() {
+    let Some(fx) = fixture().await else {
+        return;
+    };
+    seed(&fx).await;
+    seed_chart(&fx).await;
+    let app = app_for(&fx);
+
+    // No employee named E999 exists; there is nothing to move.
+    let mut body = transfer_body("req-1", "D-HR");
+    body["employee"] = json!("E999");
+    let (status, json) = post(
+        app,
+        "/v1/operations/transfer",
+        Some("Bearer ci"),
+        body.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json["code"], "precondition_failed");
+    fx.cleanup().await;
+}

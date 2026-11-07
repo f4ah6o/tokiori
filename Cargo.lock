@@ -1702,6 +1702,7 @@ dependencies = [
  "tokiori-model",
  "tokiori-pg",
  "tower",
+ "uuid",
 ]
 
 [[package]]

@@ -90,15 +90,21 @@ impl PgStore {
     ///
     /// Acknowledging an already-acknowledged event is a no-op, so a consumer
     /// that retries after a crash does not fail.
-    pub async fn ack_outbox(&self, event_ids: &[Uuid]) -> Result<u64, PgError> {
+    /// Acknowledges events, but only those in `scope`.
+    ///
+    /// The scope is part of the statement rather than a check the caller is
+    /// trusted to make: without it a consumer could acknowledge another
+    /// tenant's events and silently retire them.
+    pub async fn ack_outbox(&self, scope: &str, event_ids: &[Uuid]) -> Result<u64, PgError> {
         if event_ids.is_empty() {
             return Ok(0);
         }
         let result = sqlx::query(
             "UPDATE outbox_events SET acknowledged_at = now() \
-             WHERE event_id = ANY($1) AND acknowledged_at IS NULL",
+             WHERE scope_id = $2 AND event_id = ANY($1) AND acknowledged_at IS NULL",
         )
         .bind(event_ids)
+        .bind(scope)
         .execute(self.pool())
         .await?;
         Ok(result.rows_affected())

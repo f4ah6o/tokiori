@@ -816,7 +816,7 @@ async fn outbox_ack(ctx: Context<'_>, event_ids: &[String]) -> Result<(), Failur
             .map_err(|_| Failure::new("invalid_event_id", format!("{text:?} is not a UUID")))?;
         ids.push(id);
     }
-    let acknowledged = store.ack_outbox(&ids).await?;
+    let acknowledged = store.ack_outbox(ctx.scope, &ids).await?;
     emit(ctx.format, &json!({ "acknowledged": acknowledged }), || {
         format!("{acknowledged} event(s) acknowledged")
     });

@@ -87,6 +87,9 @@ impl From<PgError> for ApiError {
             | PgError::OperationNotFound { .. } => (StatusCode::NOT_FOUND, "not_found"),
             PgError::UnknownRevision { .. } => (StatusCode::BAD_REQUEST, "unknown_revision"),
             PgError::InvalidQuery(_) => (StatusCode::BAD_REQUEST, "invalid_query"),
+            PgError::IdempotencyConflict { .. } | PgError::PreconditionFailed { .. } => {
+                (StatusCode::CONFLICT, err.code())
+            }
             _ => (StatusCode::INTERNAL_SERVER_ERROR, err.code()),
         };
         Self {
@@ -147,6 +150,25 @@ mod tests {
         }));
         assert_eq!(query.status, StatusCode::BAD_REQUEST);
         assert_eq!(query.code, "invalid_query");
+    }
+
+    #[test]
+    fn operation_conflicts_map_to_409_with_their_store_code() {
+        let idempotency = ApiError::from(PgError::IdempotencyConflict {
+            operation_type: "transfer".to_owned(),
+            idempotency_key: "k".to_owned(),
+            stored: "sha256:0".to_owned(),
+            incoming: "sha256:1".to_owned(),
+        });
+        assert_eq!(idempotency.status, StatusCode::CONFLICT);
+        assert_eq!(idempotency.code, "idempotency_conflict");
+
+        let precondition = ApiError::from(PgError::PreconditionFailed {
+            operation: "transfer".to_owned(),
+            detail: "employee already in the department".to_owned(),
+        });
+        assert_eq!(precondition.status, StatusCode::CONFLICT);
+        assert_eq!(precondition.code, "precondition_failed");
     }
 
     #[test]
