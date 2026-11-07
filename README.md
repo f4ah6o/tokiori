@@ -67,6 +67,21 @@ TOKIORI_TEST_DATABASE_URL=postgres://tokiori:tokiori@localhost:55432/tokiori \
 
 `TOKIORI_TEST_DATABASE_URL` が未設定のとき受入テストは **skip** され、PASS としては数えません。
 
+### CI をローカルで再現する
+
+`.github/workflows/ci.yml` は [mizchi/actrun](https://github.com/mizchi/actrun) でも実行できます。
+
+```sh
+npx @mizchi/actrun workflow run .github/workflows/ci.yml --workspace-mode local
+```
+
+ローカル実行の差分（サービス接続先、未対応 action の代替）は `actrun.toml` にあります。
+**actrun の PASS は GitHub Actions の PASS ではありません** — fuzz ジョブはローカルでは skip され、
+GitHub だけがワークフロー全体の構文制約（例: `jobs.<job_id>.if` で `env` を参照できない）を検出します。
+詳細は [ADR 0004](docs/adr/0004-local-ci-with-actrun.md)。
+
+actrun は実行後にワークスペースを元に戻すため、**未コミットの変更はテストされません**。実行前にコミットしてください。
+
 | Crate | 責務 |
 | --- | --- |
 | `tokiori-model` | モデル AST・正規化・検証・canonical JSON・半開区間と業務日付 |
