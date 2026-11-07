@@ -16,6 +16,7 @@ tokiori-model.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+noprop.workspace = true
 tokio.workspace = true
 
 [lints]
