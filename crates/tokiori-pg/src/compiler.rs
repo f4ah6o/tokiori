@@ -157,32 +157,36 @@ fn build_joins(
         let relation = &hop.relation_type;
         let from_role = &hop.from_role;
         let to_role = &hop.to_role;
-        let from_visible = visible_at(&alias, valid_at, revision);
         let to_visible = visible_at(&next_alias, valid_at, revision);
 
-        // The first hop's from-role is the FROM clause (`r0`), so it is not
-        // joined again; every later hop joins its own from-role.
+        // The first hop's from-role is the FROM clause (`r0`). Every later hop
+        // needs its own row for the from-role: the previous hop already used
+        // `r{index}` for the to-role it reached, and one alias cannot name two
+        // rows.
+        let mut origin = alias.clone();
         if index > 0 {
+            let from_alias = format!("f{index}");
+            let from_visible = visible_at(&from_alias, valid_at, revision);
             let _ = write!(
                 joins,
-                r"
- JOIN relation_role_versions {alias}
-   ON {alias}.scope_id = {scope}
-  AND {alias}.relation_type = '{relation}'
-  AND {alias}.role = '{from_role}'
-  AND {alias}.participant_id = {from_id}
-  AND {from_visible}"
+                "\n JOIN relation_role_versions {from_alias} \
+                 \n   ON {from_alias}.scope_id = {scope} \
+                 \n  AND {from_alias}.relation_type = '{relation}' \
+                 \n  AND {from_alias}.role = '{from_role}' \
+                 \n  AND {from_alias}.participant_id = {from_id} \
+                 \n  AND {from_visible}"
             );
+            origin = from_alias;
         }
+
         let _ = write!(
             joins,
-            r"
- JOIN relation_role_versions {next_alias}
-   ON {next_alias}.scope_id = {alias}.scope_id
-  AND {next_alias}.relation_type = {alias}.relation_type
-  AND {next_alias}.relation_id = {alias}.relation_id
-  AND {next_alias}.role = '{to_role}'
-  AND {to_visible}"
+            "\n JOIN relation_role_versions {next_alias} \
+             \n   ON {next_alias}.scope_id = {origin}.scope_id \
+             \n  AND {next_alias}.relation_type = {origin}.relation_type \
+             \n  AND {next_alias}.relation_id = {origin}.relation_id \
+             \n  AND {next_alias}.role = '{to_role}' \
+             \n  AND {to_visible}"
         );
         from_id = format!("{next_alias}.participant_id");
     }
