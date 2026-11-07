@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -17,6 +18,8 @@ tower.workspace = true
 
 [dev-dependencies]
 noprop.workspace = true
+sqlx.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

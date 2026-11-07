@@ -1692,9 +1692,11 @@ name = "tokiori-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "noprop",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
  "tokiori-model",
