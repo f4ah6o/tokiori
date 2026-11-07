@@ -4,12 +4,14 @@
 //! written, and a rejected operation rolls back, so a failed request never
 //! leaves a partially written relation behind.
 
+mod cutover;
 mod error;
 mod facts;
 mod revision;
 mod roles;
 mod store;
 
+pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};
 pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
 pub use revision::{latest_revision, next_revision};
