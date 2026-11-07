@@ -88,14 +88,17 @@ jobs:
     timeout-minutes: 20
     # Advisory while the corpus is young; promote to required once stable.
     continue-on-error: true
-    # actrun cannot install the nightly toolchain or cargo-fuzz, so the job is
-    # skipped locally rather than reported as a failure.
-    if: env.ACTRUN_LOCAL != 'true'
     steps:
       - uses: actions/checkout@v7.0.1
+      # actrun cannot install the nightly toolchain or cargo-fuzz, so the fuzz
+      # steps are skipped locally instead of failing. The guard lives on the
+      # steps because `jobs.<job_id>.if` cannot read the `env` context.
       - uses: dtolnay/rust-toolchain@nightly
+        if: env.ACTRUN_LOCAL != 'true'
       - uses: taiki-e/install-action@cargo-fuzz
+        if: env.ACTRUN_LOCAL != 'true'
       - name: Fuzz the model parser
+        if: env.ACTRUN_LOCAL != 'true'
         working-directory: fuzz
         run: cargo fuzz run fuzz_model_input -- -runs=20000 -max_total_time=120
       - name: Keep crashing inputs
