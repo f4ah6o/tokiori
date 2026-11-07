@@ -7,6 +7,7 @@
 mod cutover;
 mod error;
 mod facts;
+mod operations;
 mod revision;
 mod roles;
 mod store;
@@ -14,6 +15,7 @@ mod store;
 pub use cutover::{Cutover, CutoverOutcome};
 pub use error::{ApplyOutcome, PgError};
 pub use facts::{AttributeAnswer, ReadAttribute, SetAttribute};
+pub use operations::{OperationKey, OperationRecord, input_digest};
 pub use revision::{latest_revision, next_revision};
 pub use roles::{ReadRole, RoleAnswer, SetRole};
 pub use store::{

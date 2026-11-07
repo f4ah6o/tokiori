@@ -70,6 +70,20 @@ pub enum PgError {
         revision: u64,
         latest: Option<u64>,
     },
+    #[error("operation {operation_type:?} {idempotency_key:?} was already recorded")]
+    OperationReplayed {
+        operation_type: String,
+        idempotency_key: String,
+    },
+    #[error(
+        "operation {operation_type:?} {idempotency_key:?} was already used with different input"
+    )]
+    IdempotencyConflict {
+        operation_type: String,
+        idempotency_key: String,
+        stored: String,
+        incoming: String,
+    },
     #[error("valid interval starting {from} and ending {until} is empty")]
     EmptyInterval { from: String, until: String },
     #[error("database error: {0}")]
@@ -97,6 +111,8 @@ impl PgError {
             Self::InvalidAttribute { .. } => "invalid_attribute",
             Self::NothingToEnd { .. } => "nothing_to_end",
             Self::UnknownRevision { .. } => "unknown_revision",
+            Self::OperationReplayed { .. } => "operation_replayed",
+            Self::IdempotencyConflict { .. } => "idempotency_conflict",
             Self::EmptyInterval { .. } => "empty_interval",
             Self::Db(_) => "database_error",
             Self::Migrate(_) => "migration_error",
